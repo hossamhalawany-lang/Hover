@@ -1,4 +1,4 @@
-export type UserRole = 'ADMIN' | 'USER';
+export type UserRole = 'ADMIN' | 'SUPERVISOR' | 'USER';
 export type UserStatus = 'ACTIVE' | 'DISABLED';
 
 export interface User {
@@ -13,7 +13,7 @@ export interface User {
   createdAt?: string;
 }
 
-export type ShiftName = 'Morning' | 'Mid' | 'Night';
+export type ShiftName = 'Morning' | 'Mid' | 'Night' | '24H On-Call';
 
 export interface ShiftInfo {
   name: ShiftName;
@@ -21,13 +21,24 @@ export interface ShiftInfo {
   startTime: string;
   endTime: string;
   currentDate: string;
+  businessDate?: string;
+  calendarDate?: string;
+  previousShiftBusinessDate?: string;
   timeRemainingSeconds: number;
   timeRemainingFormatted: string;
   approachingEnd: boolean;
   timezone: string;
   nextShift: ShiftName;
   previousShift: ShiftName;
-  colorTheme: 'blue' | 'orange' | 'purple';
+  colorTheme: 'blue' | 'orange' | 'purple' | 'indigo';
+  isOnCallDay?: boolean;
+  dayType?: 'WEEKDAY' | 'WEEKEND_ONCALL' | 'HOLIDAY_ONCALL';
+  dayName?: string;
+  onCallReason?: string;
+  weekendHolidayShiftMode?: 'SINGLE_OPERATOR_24H' | 'THREE_SHIFTS';
+  isUnified24HActive?: boolean;
+  crossesMidnight?: boolean;
+  isNightCrossoverActive?: boolean;
 }
 
 export type TaskPriority = 'Critical' | 'High' | 'Medium' | 'Low';
@@ -47,11 +58,13 @@ export interface Task {
   original_shift: ShiftName;
   current_shift: ShiftName;
   assigned_user?: string | null;
+  assigned_user_full_name?: string | null;
   due_date?: string | null;
   last_updated_by: string;
   last_updated_at: string;
   completed_at?: string | null;
   completed_by?: string | null;
+  completed_by_full_name?: string | null;
   completion_note?: string | null;
   cancellation_reason?: string | null;
   blocked_reason?: string | null;
@@ -59,6 +72,9 @@ export interface Task {
   handover_state: HandoverState;
   version: number;
   isOverdue?: boolean;
+  isHandoverLocked?: boolean;
+  is_cob?: number | boolean;
+  cob_count?: number | null;
 }
 
 export interface TaskHistoryItem {
@@ -133,6 +149,9 @@ export interface SystemSettings {
   admin_recovery_key_hash?: string;
   admin_totp_secret?: string;
   admin_totp_enabled?: number;
+  weekend_oncall_enabled?: number;
+  weekend_holiday_shift_mode?: 'SINGLE_OPERATOR_24H' | 'THREE_SHIFTS';
+  holiday_dates?: string;
 }
 
 export type AppSettings = SystemSettings;
@@ -151,3 +170,148 @@ export interface ReportMetrics {
   byPriority: Array<{ priority: TaskPriority; count: number }>;
   currentShift: ShiftInfo;
 }
+
+export interface DailyBriefingItem {
+  id: number;
+  taskId: number;
+  taskCode: string;
+  taskTitle: string;
+  action: string;
+  actionVerb: string;
+  userName: string;
+  shift: ShiftName;
+  formattedTime: string;
+  formattedDate: string;
+  status: TaskStatus;
+  priority: TaskPriority;
+  category: string;
+  summarySentence: string;
+  notes?: string | null;
+  createdAt: string;
+}
+
+export interface DailyBriefingResponse {
+  dateLabel: string;
+  startDate: string;
+  endDate: string;
+  isYesterday: boolean;
+  totalActivities: number;
+  completedCount: number;
+  pendingCount: number;
+  blockedCount: number;
+  carriedCount: number;
+  items: DailyBriefingItem[];
+  availableUsers: Array<{ username: string; fullName: string }>;
+}
+
+export interface TaskCategory {
+  id: number;
+  name: string;
+  color: string;
+}
+
+export interface DaySummary {
+  totalCompletedToday: number;
+  completedByShift: Record<string, number>;
+  completedByUsers: Array<{
+    username: string;
+    full_name: string;
+    count: number;
+  }>;
+  previousShiftClosures: Array<{
+    id: number;
+    from_shift: string;
+    to_shift: string;
+    shift_date: string;
+    closed_by: string;
+    closed_at: string;
+    general_notes: string | null;
+    tasks_completed_count: number;
+    tasks_carried_over_count: number;
+    tasks_blocked_count: number;
+  }>;
+}
+
+export interface CurrentHandoverResponse {
+  currentShift: ShiftInfo;
+  latestHandover?: Handover;
+  acceptedBy?: string | null;
+  acceptedAt?: string | null;
+  openTasksCount: number;
+  openTasks: Task[];
+  completedTasksToday?: Task[];
+  daySummary?: DaySummary;
+  isShiftClosed?: boolean;
+  shiftClosedBy?: string | null;
+  shiftClosedAt?: string | null;
+  shiftHandoverPendingAck?: boolean;
+  isShiftAccepted?: boolean;
+  precedingShiftClosed?: boolean;
+}
+
+export interface ShiftNote {
+  id: number;
+  shift_date: string;
+  shift_name: string;
+  title: string | null;
+  content: string;
+  color: 'amber' | 'blue' | 'emerald' | 'rose' | 'purple';
+  pinned: number;
+  created_by: string;
+  created_at: string;
+  updated_by?: string | null;
+  updated_at?: string | null;
+}
+
+export interface BackupTableInfo {
+  name: string;
+  label: string;
+  description: string;
+  dateColumn: string | null;
+  category: 'configuration' | 'operational' | 'security';
+  currentCount: number;
+}
+
+export interface BackupMetadata {
+  app: string;
+  backup_version: string;
+  format: 'shift-handover-backup';
+  exported_at: string;
+  exported_by: string;
+  mode: 'FULL' | 'SELECTIVE';
+  date_range: {
+    start: string | null;
+    end: string | null;
+  };
+  tables_included: string[];
+  record_counts: Record<string, number>;
+  total_records: number;
+  checksum: string;
+}
+
+export interface BackupPackage {
+  _metadata: BackupMetadata;
+  data: Record<string, any[]>;
+}
+
+export interface BackupValidationResult {
+  valid: boolean;
+  errors: string[];
+  warnings: string[];
+  metadata: BackupMetadata | null;
+  tableCounts: Record<string, number>;
+  totalRecords: number;
+  detectedTables: string[];
+}
+
+export interface RestoreResult {
+  success: boolean;
+  mode: 'merge' | 'overwrite';
+  restoredAt: string;
+  restoredBy: string;
+  tableStats: Record<string, { inserted: number; updated: number; skipped: number }>;
+  totalProcessed: number;
+  message: string;
+}
+
+

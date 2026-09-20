@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { ArrowRightLeft, Lock, User, AlertCircle, LogIn, Sparkles, Sun, SunMedium, Moon, Clock, Check, KeyRound, Eye, EyeOff } from 'lucide-react';
+import { ArrowRightLeft, Lock, User, AlertCircle, LogIn, Sun, SunMedium, Moon, Clock, Check, KeyRound, Eye, EyeOff, PhoneForwarded, ShieldCheck, Info } from 'lucide-react';
 import { api } from '../api';
-import { User as UserType, ShiftName } from '../types';
+import { User as UserType, ShiftName, ShiftInfo } from '../types';
 import { ForgotPasswordModal } from './ForgotPasswordModal';
 
 interface LoginModalProps {
@@ -26,12 +26,27 @@ export const LoginModal: React.FC<LoginModalProps> = ({ onLoginSuccess }) => {
   const [shiftTimings, setShiftTimings] = useState<Record<ShiftName, string>>({
     Morning: '06:00 - 14:00',
     Mid: '14:00 - 22:00',
-    Night: '22:00 - 06:00'
+    Night: '22:00 - 06:00',
+    '24H On-Call': '06:00 - 06:00 (+1d)'
   });
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [forgotModalOpen, setForgotModalOpen] = useState(false);
   const [resetSuccessToast, setResetSuccessToast] = useState<string | null>(null);
+  const [currentShiftInfo, setCurrentShiftInfo] = useState<ShiftInfo | null>(null);
+  const [manualShiftOverride, setManualShiftOverride] = useState(false);
+
+  // Check if today is weekend (Friday = 5, Saturday = 6) or official holiday
+  const isWeekendDay = (() => {
+    const d = new Date().getDay();
+    return d === 5 || d === 6;
+  })();
+  const isOffDay = Boolean(currentShiftInfo?.isOnCallDay ?? isWeekendDay);
+  const isUnified24H = Boolean(
+    (currentShiftInfo?.isUnified24HActive ?? isOffDay) &&
+    (currentShiftInfo?.weekendHolidayShiftMode !== 'THREE_SHIFTS') &&
+    !manualShiftOverride
+  );
 
   // Auto-detect current shift from backend timings
   useEffect(() => {
@@ -41,6 +56,10 @@ export const LoginModal: React.FC<LoginModalProps> = ({ onLoginSuccess }) => {
           api.getCurrentShift().catch(() => null),
           api.getShifts().catch(() => null)
         ]);
+
+        if (currRes) {
+          setCurrentShiftInfo(currRes);
+        }
 
         if (listRes && Array.isArray(listRes) && listRes.length > 0) {
           const timingMap: Record<ShiftName, string> = { ...shiftTimings };
@@ -52,18 +71,29 @@ export const LoginModal: React.FC<LoginModalProps> = ({ onLoginSuccess }) => {
           setShiftTimings(timingMap);
         }
 
-        if (currRes && currRes.name) {
-          setDetectedShift(currRes.name as ShiftName);
-          setSelectedShift(currRes.name as ShiftName);
+        if (currRes) {
+          if (currRes.isOnCallDay && currRes.isUnified24HActive) {
+            setDetectedShift('24H On-Call');
+            setSelectedShift('24H On-Call');
+          } else if (currRes.name) {
+            setDetectedShift(currRes.name as ShiftName);
+            setSelectedShift(currRes.name as ShiftName);
+          }
         } else {
-          // Client-side fallback based on local hour
-          const h = new Date().getHours();
-          let fallback: ShiftName = 'Morning';
-          if (h >= 6 && h < 14) fallback = 'Morning';
-          else if (h >= 14 && h < 22) fallback = 'Mid';
-          else fallback = 'Night';
-          setDetectedShift(fallback);
-          setSelectedShift(fallback);
+          // Client-side fallback based on day of week and local hour
+          const dayOfWeek = new Date().getDay();
+          if (dayOfWeek === 5 || dayOfWeek === 6) {
+            setDetectedShift('24H On-Call');
+            setSelectedShift('24H On-Call');
+          } else {
+            const h = new Date().getHours();
+            let fallback: ShiftName = 'Morning';
+            if (h >= 6 && h < 14) fallback = 'Morning';
+            else if (h >= 14 && h < 22) fallback = 'Mid';
+            else fallback = 'Night';
+            setDetectedShift(fallback);
+            setSelectedShift(fallback);
+          }
         }
       } catch {
         // Safe fallback
@@ -72,6 +102,15 @@ export const LoginModal: React.FC<LoginModalProps> = ({ onLoginSuccess }) => {
 
     detectShift();
   }, []);
+
+  // Whenever isUnified24H status changes, synchronize selectedShift
+  useEffect(() => {
+    if (isUnified24H) {
+      setSelectedShift('24H On-Call');
+    } else if (selectedShift === '24H On-Call') {
+      setSelectedShift(detectedShift === '24H On-Call' ? 'Morning' : detectedShift);
+    }
+  }, [isUnified24H]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -88,16 +127,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({ onLoginSuccess }) => {
     }
   };
 
-  const fillCredentials = (u: string, p: string, suggestedShift?: ShiftName) => {
-    setUsername(u);
-    setPassword(p);
-    if (suggestedShift) {
-      setSelectedShift(suggestedShift);
-    }
-    setError(null);
-  };
-
-  const shiftOptions: ShiftOption[] = [
+  const standardShiftOptions: ShiftOption[] = [
     {
       id: 'Morning',
       name: 'Morning Shift',
@@ -147,7 +177,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({ onLoginSuccess }) => {
             </div>
           )}
 
-          {/* Shift Selection Cards */}
+          {/* Operating Duty Shift Selection Section */}
           <div>
             <div className="flex items-center justify-between mb-2">
               <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">
@@ -155,54 +185,159 @@ export const LoginModal: React.FC<LoginModalProps> = ({ onLoginSuccess }) => {
               </label>
               <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400 flex items-center gap-1">
                 <Clock className="w-3 h-3 text-[#0F4C81] dark:text-blue-400" />
-                Auto-detected: <strong className="font-semibold text-slate-800 dark:text-slate-200">{detectedShift}</strong>
+                Auto-detected:{' '}
+                <strong className="font-semibold text-slate-800 dark:text-slate-200">
+                  {isUnified24H ? '24H On-Call Duty' : detectedShift}
+                </strong>
               </span>
             </div>
 
-            <div className="grid grid-cols-3 gap-2.5">
-              {shiftOptions.map(opt => {
-                const Icon = opt.icon;
-                const isSelected = selectedShift === opt.id;
-                const isCurrentTime = detectedShift === opt.id;
+            {/* If Today is Friday, Saturday, or Official Holiday: Dedicated 24H On-Call Card */}
+            {isUnified24H ? (
+              <div className="space-y-2.5">
+                {/* Active 24H On-Call Card */}
+                <div
+                  id="duty-shift-oncall-active-card"
+                  className="p-3.5 rounded-xl border-2 border-emerald-500 bg-emerald-50/90 dark:bg-emerald-950/50 text-emerald-950 dark:text-emerald-100 shadow-xs relative"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-8 h-8 rounded-lg bg-emerald-600 text-white flex items-center justify-center shadow-xs shrink-0">
+                        <PhoneForwarded className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold text-sm text-slate-900 dark:text-white">
+                            24H On-Call Duty
+                          </span>
+                          <span className="text-[9px] font-black uppercase tracking-wider px-2 py-0.5 rounded-md bg-emerald-600 text-white">
+                            Active Today
+                          </span>
+                        </div>
+                        <div className="text-[11px] font-mono text-emerald-800 dark:text-emerald-300 font-medium">
+                          {currentShiftInfo?.startTime || '06:00'} &rarr; {currentShiftInfo?.endTime || '06:00 (+1d)'} &bull; 24-Hour Continuous Coverage
+                        </div>
+                      </div>
+                    </div>
+                    <div className="w-5 h-5 rounded-full bg-emerald-600 text-white flex items-center justify-center shrink-0">
+                      <Check className="w-3 h-3 stroke-[3]" />
+                    </div>
+                  </div>
 
-                return (
-                  <button
-                    key={opt.id}
-                    type="button"
-                    id={`shift-select-${opt.id.toLowerCase()}`}
-                    onClick={() => setSelectedShift(opt.id)}
-                    className={`relative p-3 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between min-h-[90px] ${
-                      isSelected
-                        ? `${opt.themeColor} ring-2 ring-offset-1 ring-[#0F4C81] shadow-xs`
-                        : 'border-slate-200 dark:border-slate-700 hover:border-slate-300 dark:hover:border-slate-600 bg-slate-50/50 dark:bg-slate-800/40 text-slate-700 dark:text-slate-300'
-                    }`}
-                  >
-                    <div>
-                      <div className="flex items-center justify-between">
-                        <Icon className={`w-4 h-4 ${isSelected ? 'text-current' : 'text-slate-400'}`} />
-                        {isSelected ? (
-                          <span className="w-4 h-4 rounded-full bg-[#0F4C81] text-white flex items-center justify-center">
-                            <Check className="w-2.5 h-2.5 stroke-[3]" />
-                          </span>
-                        ) : isCurrentTime ? (
-                          <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300">
-                            Now
-                          </span>
-                        ) : null}
-                      </div>
-                      <div className="font-bold text-xs mt-2 text-slate-900 dark:text-white">
-                        {opt.name}
-                      </div>
-                    </div>
-                    <div className="text-[10px] font-mono text-slate-500 dark:text-slate-400 mt-1">
-                      {opt.hours}
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-            <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1.5">
-              You will enter as <strong className="text-[#0F4C81] dark:text-blue-300 font-semibold">{selectedShift} Shift</strong> operator. Only carried-over and assigned items for this shift will be prioritized.
+                  <p className="text-[11px] text-emerald-900/90 dark:text-emerald-200/90 mt-2 bg-white/60 dark:bg-emerald-900/40 p-2 rounded-lg border border-emerald-200 dark:border-emerald-800">
+                    <strong className="font-bold">
+                      {currentShiftInfo?.dayName || (new Date().getDay() === 5 ? 'Friday' : 'Saturday')} Coverage:
+                    </strong>{' '}
+                    {currentShiftInfo?.onCallReason || 'Single-operator on-call shift active for this operational day. You will cover incoming operations and hand over to the next day.'}
+                  </p>
+                </div>
+
+                {/* Dimmed & Disabled Standard 3 Shifts */}
+                <div>
+                  <div className="flex items-center justify-between mb-1.5 px-0.5">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500 flex items-center gap-1">
+                      <Lock className="w-3 h-3" />
+                      Standard 3-Shift Rotation (Suspended on Off-Days)
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setManualShiftOverride(true)}
+                      className="text-[10px] text-[#0F4C81] dark:text-blue-400 hover:underline cursor-pointer font-medium"
+                      title="Switch to 3-shift selection if multi-operator rotation is requested"
+                    >
+                      Override to 3 Shifts
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-2 opacity-40 grayscale-[50%] pointer-events-none select-none">
+                    {standardShiftOptions.map(opt => {
+                      const Icon = opt.icon;
+                      return (
+                        <div
+                          key={opt.id}
+                          className="p-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-100 dark:bg-slate-800/40 text-slate-500 flex flex-col justify-between min-h-[76px]"
+                        >
+                          <div className="flex items-center justify-between">
+                            <Icon className="w-3.5 h-3.5 text-slate-400" />
+                            <span className="text-[8px] font-bold uppercase px-1 py-0.2 rounded bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-400">
+                              Off
+                            </span>
+                          </div>
+                          <div className="font-semibold text-xs mt-1 text-slate-700 dark:text-slate-300 truncate">
+                            {opt.name}
+                          </div>
+                          <div className="text-[9px] font-mono text-slate-400">
+                            {opt.hours}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              /* Standard Workday Shift Selection Cards */
+              <div>
+                {manualShiftOverride && (
+                  <div className="mb-2 p-2 rounded-lg bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800 flex items-center justify-between text-xs text-blue-800 dark:text-blue-300">
+                    <span>Manual 3-Shift Override Active</span>
+                    <button
+                      type="button"
+                      onClick={() => setManualShiftOverride(false)}
+                      className="text-[11px] font-bold underline cursor-pointer"
+                    >
+                      Re-enable 24H Duty
+                    </button>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-3 gap-2.5">
+                  {standardShiftOptions.map(opt => {
+                    const Icon = opt.icon;
+                    const isSelected = selectedShift === opt.id;
+                    const isCurrentTime = detectedShift === opt.id;
+
+                    return (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        id={`shift-select-${opt.id.toLowerCase()}`}
+                        onClick={() => setSelectedShift(opt.id)}
+                        className={`relative p-3 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between min-h-[90px] ${
+                          isSelected
+                            ? `${opt.themeColor} ring-2 ring-offset-1 ring-[#0F4C81] shadow-xs`
+                            : 'border-slate-200 dark:border-slate-700 hover:border-slate-300 dark:hover:border-slate-600 bg-slate-50/50 dark:bg-slate-800/40 text-slate-700 dark:text-slate-300'
+                        }`}
+                      >
+                        <div>
+                          <div className="flex items-center justify-between">
+                            <Icon className={`w-4 h-4 ${isSelected ? 'text-current' : 'text-slate-400'}`} />
+                            {isSelected ? (
+                              <span className="w-4 h-4 rounded-full bg-[#0F4C81] text-white flex items-center justify-center">
+                                <Check className="w-2.5 h-2.5 stroke-[3]" />
+                              </span>
+                            ) : isCurrentTime ? (
+                              <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                                Now
+                              </span>
+                            ) : null}
+                          </div>
+                          <div className="font-bold text-xs mt-2 text-slate-900 dark:text-white">
+                            {opt.name}
+                          </div>
+                        </div>
+                        <div className="text-[10px] font-mono text-slate-500 dark:text-slate-400 mt-1">
+                          {opt.hours}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-2">
+              You will enter as <strong className="text-[#0F4C81] dark:text-blue-300 font-semibold">{selectedShift}</strong> operator. Handover tasks and operational logs will be bound to this duty.
             </p>
           </div>
 
@@ -277,54 +412,8 @@ export const LoginModal: React.FC<LoginModalProps> = ({ onLoginSuccess }) => {
             className="w-full py-2.5 px-4 rounded-lg bg-[#0F4C81] hover:bg-[#16324F] text-white font-semibold text-sm shadow-md transition-colors flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 mt-2"
           >
             <LogIn className="w-4 h-4" />
-            {loading ? 'Authenticating...' : `Sign In to ${selectedShift} Shift`}
+            {loading ? 'Authenticating...' : (selectedShift === '24H On-Call' ? 'Sign In to 24H On-Call Duty' : `Sign In to ${selectedShift} Shift`)}
           </button>
-
-          {/* Quick Demo Credentials Panel */}
-          <div className="pt-4 border-t border-slate-200 dark:border-slate-700/60">
-            <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-500 dark:text-slate-400 mb-2">
-              <Sparkles className="w-3.5 h-3.5 text-indigo-500" />
-              <span>Quick Test Operators:</span>
-            </div>
-            <div className="grid grid-cols-2 gap-2 text-xs">
-              <button
-                type="button"
-                id="btn-demo-admin"
-                onClick={() => fillCredentials('admin', 'Admin@123456')}
-                className="px-2.5 py-1.5 rounded border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/80 hover:bg-slate-100 dark:hover:bg-slate-700 text-left cursor-pointer"
-              >
-                <div className="font-semibold text-slate-800 dark:text-slate-200">Admin</div>
-                <div className="text-[10px] text-slate-500">Default Password (or Reset)</div>
-              </button>
-              <button
-                type="button"
-                id="btn-demo-mohamed"
-                onClick={() => fillCredentials('mohamed', 'Mohamed@123456', 'Mid')}
-                className="px-2.5 py-1.5 rounded border border-amber-200 dark:border-amber-800/60 bg-amber-50/50 dark:bg-amber-950/30 hover:bg-amber-100 dark:hover:bg-amber-900/40 text-left cursor-pointer"
-              >
-                <div className="font-semibold text-amber-900 dark:text-amber-200">Mid Op (Mohamed)</div>
-                <div className="text-[10px] text-amber-700 dark:text-amber-400">Incoming Handover Active</div>
-              </button>
-              <button
-                type="button"
-                id="btn-demo-ahmed"
-                onClick={() => fillCredentials('ahmed', 'Ahmed@123456', 'Morning')}
-                className="px-2.5 py-1.5 rounded border border-blue-200 dark:border-blue-800/60 bg-blue-50/50 dark:bg-blue-950/30 hover:bg-blue-100 dark:hover:bg-blue-900/40 text-left cursor-pointer"
-              >
-                <div className="font-semibold text-blue-900 dark:text-blue-200">Morning Op (Ahmed)</div>
-                <div className="text-[10px] text-blue-700 dark:text-blue-400">Section Handover Ready</div>
-              </button>
-              <button
-                type="button"
-                id="btn-demo-karim"
-                onClick={() => fillCredentials('karim', 'Karim@123456', 'Night')}
-                className="px-2.5 py-1.5 rounded border border-purple-200 dark:border-purple-800/60 bg-purple-50/50 dark:bg-purple-950/30 hover:bg-purple-100 dark:hover:bg-purple-900/40 text-left cursor-pointer"
-              >
-                <div className="font-semibold text-purple-900 dark:text-purple-200">Night Op (Karim)</div>
-                <div className="text-[10px] text-purple-700 dark:text-purple-400">Night Shift Operator</div>
-              </button>
-            </div>
-          </div>
         </form>
 
         <div className="bg-slate-50 dark:bg-[#11273e] px-8 py-3 text-center border-t border-slate-200 dark:border-slate-800 text-[11px] text-slate-500">

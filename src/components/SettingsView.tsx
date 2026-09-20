@@ -22,17 +22,81 @@ import {
   Copy,
   Check,
   Smartphone,
-  QrCode
+  QrCode,
+  FileText,
+  Calendar,
+  CalendarDays,
+  CalendarPlus,
+  ChevronDown,
+  ChevronUp,
+  Sparkles,
+  Filter,
+  Search,
+  RefreshCw,
+  Tag,
+  Palette,
+  PhoneForwarded,
+  ArrowRight
 } from 'lucide-react';
-import { User as UserType, AppSettings, AuditLog } from '../types';
+import { User as UserType, AppSettings, AuditLog, TaskCategory } from '../types';
 import { api } from '../api';
+import { BackupRestoreSection } from './BackupRestoreSection';
 
 interface SettingsViewProps {
   currentUser: UserType;
   onSettingsSaved: () => void;
-  onResetDemo: () => void;
+  onResetDemo?: () => void;
   onClearData?: () => void;
   onFactoryReset?: () => void;
+}
+
+export function validateHolidayDatesInput(input: string): {
+  isValid: boolean;
+  invalidDates: string[];
+  validDates: string[];
+} {
+  if (!input || !input.trim()) {
+    return { isValid: true, invalidDates: [], validDates: [] };
+  }
+  const parts = input.split(',').map(s => s.trim()).filter(Boolean);
+  const invalidDates: string[] = [];
+  const validDates: string[] = [];
+
+  for (const part of parts) {
+    const match = part.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!match) {
+      invalidDates.push(part);
+      continue;
+    }
+    const y = parseInt(match[1], 10);
+    const m = parseInt(match[2], 10);
+    const d = parseInt(match[3], 10);
+
+    if (y < 2000 || y > 2100 || m < 1 || m > 12 || d < 1 || d > 31) {
+      invalidDates.push(part);
+      continue;
+    }
+
+    const testDate = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
+    if (
+      testDate.getUTCFullYear() !== y ||
+      testDate.getUTCMonth() !== m - 1 ||
+      testDate.getUTCDate() !== d
+    ) {
+      invalidDates.push(part);
+      continue;
+    }
+
+    if (!validDates.includes(part)) {
+      validDates.push(part);
+    }
+  }
+
+  return {
+    isValid: invalidDates.length === 0,
+    invalidDates,
+    validDates
+  };
 }
 
 export const SettingsView: React.FC<SettingsViewProps> = ({
@@ -42,12 +106,303 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   onClearData,
   onFactoryReset
 }) => {
-  const [subTab, setSubTab] = useState<'general' | 'totp' | 'email' | 'users' | 'shifts' | 'audit' | 'deployment'>('general');
+  // Holiday Management State
+  const [holidayMode, setHolidayMode] = useState<'SINGLE' | 'RANGE'>('SINGLE');
+  const [holidayPickerDate, setHolidayPickerDate] = useState('');
+  const [singleDateInput, setSingleDateInput] = useState('');
+  const [singleDateTouched, setSingleDateTouched] = useState(false);
+  const [holidayRangeStart, setHolidayRangeStart] = useState('');
+  const [holidayRangeEnd, setHolidayRangeEnd] = useState('');
+  const [holidayFilter, setHolidayFilter] = useState<'ALL' | 'UPCOMING' | 'PAST'>('ALL');
+  const [confirmClearAll, setConfirmClearAll] = useState(false);
+  const [holidayFeedback, setHolidayFeedback] = useState<{ type: 'success' | 'info' | 'error'; message: string } | null>(null);
+  const [showBulkImport, setShowBulkImport] = useState(false);
+  const [bulkImportText, setBulkImportText] = useState('');
+  const [bulkImportFeedback, setBulkImportFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const [copiedHolidays, setCopiedHolidays] = useState(false);
+
+  // Validate single date input (strict YYYY-MM-DD)
+  const validateSingleDateStr = (val: string): { isValid: boolean; error?: string; dayName?: string; formatted?: string } => {
+    const trimmed = val.trim();
+    if (!trimmed) return { isValid: false };
+    const match = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!match) {
+      return {
+        isValid: false,
+        error: 'Format must be strictly YYYY-MM-DD (e.g. 2026-09-18)'
+      };
+    }
+    const y = parseInt(match[1], 10);
+    const m = parseInt(match[2], 10);
+    const d = parseInt(match[3], 10);
+    if (y < 2000 || y > 2100) {
+      return { isValid: false, error: 'Year must be between 2000 and 2100' };
+    }
+    if (m < 1 || m > 12) {
+      return { isValid: false, error: 'Month must be between 01 and 12' };
+    }
+    if (d < 1 || d > 31) {
+      return { isValid: false, error: 'Day must be between 01 and 31' };
+    }
+    const testDate = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
+    if (
+      testDate.getUTCFullYear() !== y ||
+      testDate.getUTCMonth() !== m - 1 ||
+      testDate.getUTCDate() !== d
+    ) {
+      return { isValid: false, error: 'Invalid calendar date for the given month' };
+    }
+    const details = getHolidayDetails(trimmed);
+    return {
+      isValid: true,
+      dayName: details.dayName,
+      formatted: details.formatted
+    };
+  };
+
+  const getTodayDateStr = (tz?: string): string => {
+    try {
+      return new Intl.DateTimeFormat('en-CA', {
+        timeZone: tz || 'Africa/Cairo',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit'
+      }).format(new Date());
+    } catch {
+      return new Date().toISOString().slice(0, 10);
+    }
+  };
+
+  const getOffsetDateStr = (offsetDays: number, tz?: string): string => {
+    const todayStr = getTodayDateStr(tz);
+    const [y, m, d] = todayStr.split('-').map(Number);
+    const target = new Date(Date.UTC(y, m - 1, d + offsetDays, 12, 0, 0));
+    return target.toISOString().slice(0, 10);
+  };
+
+  const getHolidayList = (holidayStr?: string): string[] => {
+    if (!holidayStr) return [];
+    const parts = holidayStr.split(',').map(s => s.trim()).filter(Boolean);
+    const valid = parts.filter(s => /^\d{4}-\d{2}-\d{2}$/.test(s));
+    return Array.from(new Set(valid)).sort();
+  };
+
+  const updateHolidayList = async (newList: string[]) => {
+    if (!settings) return;
+    const sorted = Array.from(new Set(newList.filter(Boolean))).sort();
+    const joined = sorted.join(', ');
+    const nextSettings = {
+      ...settings,
+      holiday_dates: joined
+    };
+    setSettings(nextSettings);
+
+    // Auto-persist immediately to database so schedule is saved permanently
+    try {
+      await api.updateSettings(nextSettings);
+      onSettingsSaved();
+    } catch (err: any) {
+      console.warn('Auto-save holiday schedule failed:', err?.message || err);
+    }
+  };
+
+  const getDatesInRange = (fromStr: string, toStr: string): string[] => {
+    if (!fromStr || !toStr) return [];
+    if (fromStr > toStr) return [];
+    const dates: string[] = [];
+    const [y1, m1, d1] = fromStr.split('-').map(Number);
+    const [y2, m2, d2] = toStr.split('-').map(Number);
+    const current = new Date(Date.UTC(y1, m1 - 1, d1, 12, 0, 0));
+    const end = new Date(Date.UTC(y2, m2 - 1, d2, 12, 0, 0));
+    let count = 0;
+    while (current <= end && count < 60) {
+      dates.push(current.toISOString().slice(0, 10));
+      current.setUTCDate(current.getUTCDate() + 1);
+      count++;
+    }
+    return dates;
+  };
+
+  const handleAddHolidayDate = (dateStr: string) => {
+    if (!dateStr || !settings) return;
+    const trimmed = dateStr.trim();
+    const validation = validateSingleDateStr(trimmed);
+    if (!validation.isValid) {
+      setHolidayFeedback({
+        type: 'error',
+        message: validation.error || 'Invalid date format. Format must be YYYY-MM-DD.'
+      });
+      return;
+    }
+    
+    const current = getHolidayList(settings.holiday_dates);
+    if (current.includes(trimmed)) {
+      setHolidayFeedback({
+        type: 'info',
+        message: `${trimmed} is already scheduled in company holidays.`
+      });
+      return;
+    }
+    const updated = [...current, trimmed].sort();
+    updateHolidayList(updated);
+    const details = getHolidayDetails(trimmed);
+    setHolidayFeedback({
+      type: 'success',
+      message: `Added ${details.formatted} (${details.dayName}) to scheduled holidays.`
+    });
+    setHolidayPickerDate('');
+    setSingleDateInput('');
+    setSingleDateTouched(false);
+  };
+
+  const handleQuickAdd = (offsetDays: number) => {
+    if (!settings) return;
+    const targetIso = getOffsetDateStr(offsetDays, settings.timezone);
+    setHolidayPickerDate(targetIso);
+    setSingleDateInput(targetIso);
+    setSingleDateTouched(true);
+    handleAddHolidayDate(targetIso);
+  };
+
+  const handleAddRangeHolidays = () => {
+    if (!holidayRangeStart || !holidayRangeEnd || !settings) return;
+    if (holidayRangeStart > holidayRangeEnd) {
+      setHolidayFeedback({
+        type: 'error',
+        message: 'The "From" date must be earlier than or equal to the "To" date.'
+      });
+      return;
+    }
+    const rangeDates = getDatesInRange(holidayRangeStart, holidayRangeEnd);
+    if (rangeDates.length === 0) return;
+    const current = getHolidayList(settings.holiday_dates);
+    const newDates = rangeDates.filter(d => !current.includes(d));
+    const merged = Array.from(new Set([...current, ...rangeDates])).sort();
+    updateHolidayList(merged);
+    setHolidayFeedback({
+      type: 'success',
+      message: `Added ${newDates.length} new holiday date${newDates.length === 1 ? '' : 's'} (${holidayRangeStart} to ${holidayRangeEnd}). Total scheduled: ${merged.length}.`
+    });
+    setHolidayRangeStart('');
+    setHolidayRangeEnd('');
+  };
+
+  const handleRemoveHolidayDate = (dateStr: string) => {
+    if (!settings) return;
+    const current = getHolidayList(settings.holiday_dates);
+    updateHolidayList(current.filter(d => d !== dateStr));
+    setHolidayFeedback({
+      type: 'info',
+      message: `Removed ${dateStr} from holiday schedule.`
+    });
+  };
+
+  const handleClearAllHolidays = () => {
+    if (!settings) return;
+    updateHolidayList([]);
+    setConfirmClearAll(false);
+    setHolidayFeedback({
+      type: 'info',
+      message: 'All scheduled holidays have been cleared.'
+    });
+  };
+
+  const handleBulkImportSubmit = () => {
+    if (!bulkImportText.trim() || !settings) return;
+    const matches = bulkImportText.match(/\b\d{4}-\d{2}-\d{2}\b/g) || [];
+    if (matches.length === 0) {
+      setBulkImportFeedback({
+        type: 'error',
+        message: 'No valid YYYY-MM-DD dates found in the pasted text.'
+      });
+      return;
+    }
+    const current = getHolidayList(settings.holiday_dates);
+    const newDates = matches.filter(m => !current.includes(m));
+    const merged = Array.from(new Set([...current, ...matches])).sort();
+    updateHolidayList(merged);
+    setBulkImportFeedback({
+      type: 'success',
+      message: `Successfully imported ${newDates.length} new holiday date${newDates.length === 1 ? '' : 's'}. Total: ${merged.length} scheduled.`
+    });
+    setBulkImportText('');
+  };
+
+  const getHolidayDetails = (dateStr: string) => {
+    const todayStr = getTodayDateStr(settings?.timezone);
+    const match = dateStr.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!match) {
+      return { formatted: dateStr, dayName: '', diffDays: 0, status: 'PAST' as const };
+    }
+    const y = parseInt(match[1], 10);
+    const m = parseInt(match[2], 10);
+    const d = parseInt(match[3], 10);
+    const dateObj = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
+    
+    const dayName = new Intl.DateTimeFormat('en-US', { weekday: 'long', timeZone: 'UTC' }).format(dateObj);
+    const formatted = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' }).format(dateObj);
+
+    let status: 'TODAY' | 'UPCOMING' | 'PAST' = 'UPCOMING';
+    if (dateStr === todayStr) {
+      status = 'TODAY';
+    } else if (dateStr < todayStr) {
+      status = 'PAST';
+    } else {
+      status = 'UPCOMING';
+    }
+
+    const todayParts = todayStr.split('-').map(Number);
+    const todayUtc = Date.UTC(todayParts[0], todayParts[1] - 1, todayParts[2]);
+    const holidayUtc = Date.UTC(y, m - 1, d);
+    const diffDays = Math.round((holidayUtc - todayUtc) / (1000 * 60 * 60 * 24));
+
+    return { formatted, dayName, diffDays, status };
+  };
+  const isSupervisor = currentUser.role === 'SUPERVISOR';
+  const canManageOperations = currentUser.role === 'ADMIN' || currentUser.role === 'SUPERVISOR';
+  const supervisorAllowedTabs: ('users' | 'shifts' | 'categories' | 'audit')[] = ['users', 'shifts', 'categories', 'audit'];
+
+  const [subTab, setSubTabState] = useState<'general' | 'totp' | 'email' | 'users' | 'shifts' | 'categories' | 'audit' | 'deployment' | 'backup'>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('hando_settings_subtab') as any;
+      if (currentUser.role === 'SUPERVISOR') {
+        if (['users', 'shifts', 'categories', 'audit'].includes(saved)) {
+          return saved;
+        }
+        return 'users';
+      }
+      if (['general', 'totp', 'email', 'users', 'shifts', 'categories', 'audit', 'deployment', 'backup'].includes(saved)) {
+        return saved;
+      }
+    }
+    return currentUser.role === 'SUPERVISOR' ? 'users' : 'general';
+  });
+
+  useEffect(() => {
+    if (isSupervisor && !supervisorAllowedTabs.includes(subTab as any)) {
+      setSubTabState('users');
+    }
+  }, [isSupervisor, subTab]);
+
+  const setSubTab = (tab: 'general' | 'totp' | 'email' | 'users' | 'shifts' | 'categories' | 'audit' | 'deployment' | 'backup') => {
+    if (isSupervisor && !supervisorAllowedTabs.includes(tab as any)) {
+      return;
+    }
+    setSubTabState(tab);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('hando_settings_subtab', tab);
+    }
+  };
   const [loading, setLoading] = useState(true);
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [users, setUsers] = useState<UserType[]>([]);
   const [shifts, setShifts] = useState<any[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
+  const [categories, setCategories] = useState<TaskCategory[]>([]);
+  const [newCatName, setNewCatName] = useState('');
+  const [newCatColor, setNewCatColor] = useState('#0F4C81');
+  const [catLoading, setCatLoading] = useState(false);
+  const [confirmDeleteCatId, setConfirmDeleteCatId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
@@ -65,6 +420,71 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [totpActionSuccess, setTotpActionSuccess] = useState<string | null>(null);
   const [totpActionError, setTotpActionError] = useState<string | null>(null);
   const [copiedKey, setCopiedKey] = useState(false);
+
+  // Audit log filtering & export state
+  const [auditFromDate, setAuditFromDate] = useState<string>('');
+  const [auditToDate, setAuditToDate] = useState<string>('');
+  const [auditUserFilter, setAuditUserFilter] = useState<string>('');
+  const [auditSearchTerm, setAuditSearchTerm] = useState<string>('');
+  const [auditLoading, setAuditLoading] = useState<boolean>(false);
+
+  const loadFilteredAuditLogs = async (overrideParams?: {
+    fromDate?: string;
+    toDate?: string;
+    user?: string;
+    search?: string;
+  }) => {
+    setAuditLoading(true);
+    try {
+      const from = overrideParams?.fromDate !== undefined ? overrideParams.fromDate : auditFromDate;
+      const to = overrideParams?.toDate !== undefined ? overrideParams.toDate : auditToDate;
+      const u = overrideParams?.user !== undefined ? overrideParams.user : auditUserFilter;
+      const s = overrideParams?.search !== undefined ? overrideParams.search : auditSearchTerm;
+
+      const logs = await api.getAuditLogs({
+        fromDate: from || undefined,
+        toDate: to || undefined,
+        user: u || undefined,
+        search: s || undefined
+      });
+      setAuditLogs(logs);
+    } catch (err: any) {
+      console.error('Failed to filter audit logs:', err);
+    } finally {
+      setAuditLoading(false);
+    }
+  };
+
+  const [isExportingAudit, setIsExportingAudit] = useState<boolean>(false);
+
+  const handleExportAuditTxt = async () => {
+    setIsExportingAudit(true);
+    setError(null);
+    try {
+      await api.downloadAuditLogsTxt({
+        fromDate: auditFromDate || undefined,
+        toDate: auditToDate || undefined,
+        user: auditUserFilter || undefined,
+        search: auditSearchTerm || undefined
+      });
+      setSuccess('Audit log file downloaded successfully.');
+    } catch (err: any) {
+      console.error('Export download error:', err);
+      try {
+        const url = api.getAuditLogsExportTxtUrl({
+          fromDate: auditFromDate || undefined,
+          toDate: auditToDate || undefined,
+          user: auditUserFilter || undefined,
+          search: auditSearchTerm || undefined
+        });
+        window.location.href = url;
+      } catch {
+        setError(err.message || 'Failed to download audit log file.');
+      }
+    } finally {
+      setIsExportingAudit(false);
+    }
+  };
 
   const loadTotpSetup = async () => {
     setLoadingTotp(true);
@@ -146,14 +566,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [newFullName, setNewFullName] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [newConfirmPassword, setNewConfirmPassword] = useState('');
-  const [newRole, setNewRole] = useState<'ADMIN' | 'OPERATOR' | 'VIEWER'>('OPERATOR');
+  const [newRole, setNewRole] = useState<'ADMIN' | 'SUPERVISOR' | 'USER'>('USER');
   const [userModalOpen, setUserModalOpen] = useState(false);
 
   // Edit user modal state
   const [editUserModalOpen, setEditUserModalOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<UserType | null>(null);
   const [editFullName, setEditFullName] = useState('');
-  const [editRole, setEditRole] = useState<'ADMIN' | 'USER'>('USER');
+  const [editRole, setEditRole] = useState<'ADMIN' | 'SUPERVISOR' | 'USER'>('USER');
   const [editStatus, setEditStatus] = useState<'ACTIVE' | 'DISABLED'>('ACTIVE');
   const [isEditingUser, setIsEditingUser] = useState(false);
 
@@ -221,16 +641,18 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     setLoading(true);
     setError(null);
     try {
-      const [sRes, uRes, shRes, aRes] = await Promise.all([
+      const [sRes, uRes, shRes, aRes, catRes] = await Promise.all([
         api.getSettings(),
         api.getUsers(),
         api.getShifts(),
-        api.getAuditLogs()
+        api.getAuditLogs(),
+        api.getCategories().catch(() => [])
       ]);
       setSettings(sRes);
       setUsers(uRes);
       setShifts(shRes);
       setAuditLogs(aRes);
+      setCategories(catRes);
     } catch (err: any) {
       setError(err.message || 'Failed to load settings.');
     } finally {
@@ -259,6 +681,13 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     if (!settings) return;
     setError(null);
     setSuccess(null);
+
+    const holidayCheck = validateHolidayDatesInput(settings.holiday_dates || '');
+    if (!holidayCheck.isValid) {
+      setError(`Cannot save shift settings: Invalid holiday dates detected: [${holidayCheck.invalidDates.join(', ')}]. All holiday dates must follow the strict YYYY-MM-DD format (e.g. 2026-09-17).`);
+      return;
+    }
+
     setSavingShifts(true);
     try {
       await api.updateSettings(settings);
@@ -328,7 +757,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         full_name: newFullName.trim(),
         password: newPassword,
         confirmPassword: newConfirmPassword,
-        role: newRole === 'ADMIN' ? 'ADMIN' : 'USER'
+        role: currentUser.role === 'SUPERVISOR'
+          ? 'USER'
+          : (newRole === 'ADMIN' ? 'ADMIN' : (newRole === 'SUPERVISOR' ? 'SUPERVISOR' : 'USER'))
       });
       setUserModalOpen(false);
       setNewUsername('');
@@ -344,9 +775,13 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   };
 
   const handleOpenEditUser = (u: UserType) => {
+    if (currentUser.role === 'SUPERVISOR' && u.role === 'ADMIN') {
+      setError('Permission denied: Supervisors cannot modify Administrator accounts.');
+      return;
+    }
     setEditingUser(u);
     setEditFullName(u.fullName || (u as any).full_name || '');
-    setEditRole(u.role === 'ADMIN' ? 'ADMIN' : 'USER');
+    setEditRole(u.role === 'ADMIN' ? 'ADMIN' : (u.role === 'SUPERVISOR' ? 'SUPERVISOR' : 'USER'));
     setEditStatus((u.status as any) || 'ACTIVE');
     setEditUserModalOpen(true);
     setError(null);
@@ -361,7 +796,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       await api.updateUser(editingUser.id, {
         fullName: editFullName.trim(),
         full_name: editFullName.trim(),
-        role: editRole,
+        role: currentUser.role === 'SUPERVISOR' ? editingUser.role : editRole,
         status: editStatus
       });
       setEditUserModalOpen(false);
@@ -376,6 +811,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   };
 
   const handleOpenResetPwd = (u: UserType) => {
+    if (currentUser.role === 'SUPERVISOR' && u.role === 'ADMIN') {
+      setError('Permission denied: Supervisors cannot reset passwords for Administrator accounts.');
+      return;
+    }
     setResettingUser(u);
     setResetNewPassword('');
     setResetConfirmPassword('');
@@ -409,6 +848,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   };
 
   const handleOpenDeleteUser = (u: UserType) => {
+    if (currentUser.role === 'SUPERVISOR' && u.role === 'ADMIN') {
+      setError('Permission denied: Supervisors cannot delete Administrator accounts.');
+      return;
+    }
     setDeletingUser(u);
     setDeleteUserModalOpen(true);
     setError(null);
@@ -473,15 +916,67 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     window.location.href = '/api/export/php-zip';
   };
 
+  const handleAddCategory = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newCatName.trim()) return;
+    setCatLoading(true);
+    setError(null);
+    setSuccess(null);
+    try {
+      const added = await api.createCategory(newCatName.trim(), newCatColor);
+      setCategories(prev => [...prev, added]);
+      setNewCatName('');
+      setSuccess(`Category "${added.name}" added successfully.`);
+      onSettingsSaved();
+    } catch (err: any) {
+      setError(err.message || 'Failed to add category.');
+    } finally {
+      setCatLoading(false);
+    }
+  };
+
+  const handleExecuteDeleteCategory = async (cat: TaskCategory) => {
+    if (categories.length <= 1) {
+      setError('Cannot delete the last remaining category.');
+      setConfirmDeleteCatId(null);
+      return;
+    }
+    setCatLoading(true);
+    setError(null);
+    setSuccess(null);
+    try {
+      const res = await api.deleteCategory(cat.id);
+      setCategories(prev => prev.filter(c => c.id !== cat.id));
+      setConfirmDeleteCatId(null);
+      setSuccess(res.message || `Category "${cat.name}" removed successfully.`);
+      onSettingsSaved();
+    } catch (err: any) {
+      setError(err.message || 'Failed to delete category.');
+    } finally {
+      setCatLoading(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       {/* Header */}
       <div>
-        <h2 className="text-xl font-bold text-slate-900 dark:text-white">
-          System Administration &amp; Settings
-        </h2>
-        <p className="text-xs text-slate-500 dark:text-slate-400">
-          Operational shifts, RBAC user privileges, compliance policies, and deployment packaging
+        <div className="flex items-center gap-2.5">
+          <h2 className="text-xl font-bold text-slate-900 dark:text-white">
+            {isSupervisor ? 'Operations Options & Management' : 'System Administration & Settings'}
+          </h2>
+          <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${
+            isSupervisor
+              ? 'bg-indigo-100 text-indigo-800 dark:bg-indigo-950/60 dark:text-indigo-300'
+              : 'bg-rose-100 text-rose-800 dark:bg-rose-950/60 dark:text-rose-300'
+          }`}>
+            {isSupervisor ? 'Supervisor Access' : 'Administrator'}
+          </span>
+        </div>
+        <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+          {isSupervisor
+            ? 'Manage operational users, shift timings, holiday calendar, task categories, and review audit trail logs'
+            : 'Operational shifts, RBAC user privileges, compliance policies, and deployment packaging'}
         </p>
       </div>
 
@@ -502,14 +997,18 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       {/* Sub Tabs */}
       <div className="flex flex-wrap gap-2 border-b border-slate-200 dark:border-slate-800 pb-3">
         {[
-          { id: 'general', label: 'General & Organization', icon: SettingsIcon },
-          { id: 'totp', label: 'Google Authenticator (2FA)', icon: Smartphone },
-          { id: 'email', label: 'Email & SMTP Recovery', icon: Mail },
-          { id: 'users', label: 'User Management (RBAC)', icon: Users },
-          { id: 'shifts', label: 'Shift Timetable', icon: Clock },
-          { id: 'audit', label: 'Audit Trail Logs', icon: Shield },
-          { id: 'deployment', label: 'PHP Packager & Reset', icon: FileArchive }
-        ].map(tab => {
+          { id: 'general', label: 'General & Organization', icon: SettingsIcon, adminOnly: true },
+          { id: 'totp', label: 'Google Authenticator (2FA)', icon: Smartphone, adminOnly: true },
+          { id: 'email', label: 'Email & SMTP Recovery', icon: Mail, adminOnly: true },
+          { id: 'users', label: 'User Management', icon: Users, adminOnly: false },
+          { id: 'shifts', label: 'Shift Timetable & Holidays', icon: Clock, adminOnly: false },
+          { id: 'categories', label: 'Task Categories', icon: Tag, adminOnly: false },
+          { id: 'audit', label: 'Audit Trail Logs', icon: Shield, adminOnly: false },
+          { id: 'backup', label: 'Backup & Restore', icon: Database, adminOnly: true },
+          { id: 'deployment', label: 'PHP Packager & Reset', icon: FileArchive, adminOnly: true }
+        ]
+          .filter(tab => !isSupervisor || !tab.adminOnly)
+          .map(tab => {
           const Icon = tab.icon;
           return (
             <button
@@ -1041,7 +1540,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     <td className="py-3 px-4 text-slate-700 dark:text-slate-200">{u.fullName || (u as any).full_name}</td>
                     <td className="py-3 px-4">
                       <span className={`px-2 py-0.5 rounded font-bold text-[10px] ${
-                        u.role === 'ADMIN' ? 'bg-rose-100 text-rose-800 dark:bg-rose-950/50 dark:text-rose-300' : 'bg-blue-100 text-blue-800 dark:bg-blue-950/50 dark:text-blue-300'
+                        u.role === 'ADMIN'
+                          ? 'bg-rose-100 text-rose-800 dark:bg-rose-950/50 dark:text-rose-300'
+                          : u.role === 'SUPERVISOR'
+                            ? 'bg-indigo-100 text-indigo-800 dark:bg-indigo-950/50 dark:text-indigo-300'
+                            : 'bg-blue-100 text-blue-800 dark:bg-blue-950/50 dark:text-blue-300'
                       }`}>
                         {u.role}
                       </span>
@@ -1058,32 +1561,47 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     <td className="py-3 px-4 text-slate-400 text-[11px]">{new Date(u.createdAt || (u as any).created_at || Date.now()).toLocaleDateString()}</td>
                     <td className="py-3 px-4 text-right">
                       <div className="flex items-center justify-end gap-1.5">
-                        <button
-                          onClick={() => handleOpenEditUser(u)}
-                          title="Edit User Details / Role / Status"
-                          className="p-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 hover:text-[#0F4C81] dark:hover:text-blue-400 transition-colors cursor-pointer"
-                        >
-                          <Edit2 className="w-3.5 h-3.5" />
-                        </button>
-                        <button
-                          onClick={() => handleOpenResetPwd(u)}
-                          title="Reset User Password"
-                          className="p-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 hover:text-amber-600 dark:hover:text-amber-400 transition-colors cursor-pointer"
-                        >
-                          <Key className="w-3.5 h-3.5" />
-                        </button>
-                        <button
-                          onClick={() => handleOpenDeleteUser(u)}
-                          disabled={currentUser?.id === u.id}
-                          title={currentUser?.id === u.id ? "Cannot delete your own account" : "Delete User"}
-                          className={`p-1.5 rounded transition-colors ${
-                            currentUser?.id === u.id
-                              ? 'opacity-25 cursor-not-allowed text-slate-400'
-                              : 'hover:bg-rose-50 dark:hover:bg-rose-950/50 text-slate-600 dark:text-slate-300 hover:text-rose-600 dark:hover:text-rose-400 cursor-pointer'
-                          }`}
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
+                        {isSupervisor && u.role === 'ADMIN' ? (
+                          <span
+                            className="inline-flex items-center gap-1 px-2 py-1 rounded text-[10px] font-semibold bg-slate-100 dark:bg-slate-800 text-slate-500"
+                            title="Admin accounts are protected and can only be managed by an Administrator"
+                          >
+                            <Lock className="w-3 h-3" />
+                            <span>Admin Protected</span>
+                          </span>
+                        ) : (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => handleOpenEditUser(u)}
+                              title="Edit User Details / Role / Status"
+                              className="p-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 hover:text-[#0F4C81] dark:hover:text-blue-400 transition-colors cursor-pointer"
+                            >
+                              <Edit2 className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleOpenResetPwd(u)}
+                              title="Reset User Password"
+                              className="p-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 hover:text-amber-600 dark:hover:text-amber-400 transition-colors cursor-pointer"
+                            >
+                              <Key className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleOpenDeleteUser(u)}
+                              disabled={currentUser?.id === u.id}
+                              title={currentUser?.id === u.id ? "Cannot delete your own account" : "Delete User"}
+                              className={`p-1.5 rounded transition-colors ${
+                                currentUser?.id === u.id
+                                  ? 'opacity-25 cursor-not-allowed text-slate-400'
+                                  : 'hover:bg-rose-50 dark:hover:bg-rose-950/50 text-slate-600 dark:text-slate-300 hover:text-rose-600 dark:hover:text-rose-400 cursor-pointer'
+                              }`}
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -1146,14 +1664,24 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   </div>
                   <div>
                     <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Role</label>
-                    <select
-                      value={newRole}
-                      onChange={e => setNewRole(e.target.value as any)}
-                      className="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
-                    >
-                      <option value="OPERATOR">OPERATOR (Create, update tasks & close shifts)</option>
-                      <option value="ADMIN">ADMIN (Full administrative access)</option>
-                    </select>
+                    {currentUser.role === 'ADMIN' ? (
+                      <select
+                        value={newRole}
+                        onChange={e => setNewRole(e.target.value as any)}
+                        className="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
+                      >
+                        <option value="USER">USER (Operator - Tasks &amp; Shift Handover)</option>
+                        <option value="SUPERVISOR">SUPERVISOR (Elevated - Shifts, Holidays, Users, Categories, Logs)</option>
+                        <option value="ADMIN">ADMIN (Full administrative system access)</option>
+                      </select>
+                    ) : (
+                      <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 text-xs">
+                        <span className="font-semibold text-slate-900 dark:text-white">USER (Operator)</span>
+                        <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                          Supervisors create operational shift users.
+                        </p>
+                      </div>
+                    )}
                   </div>
                   <div className="flex justify-end gap-2 pt-2">
                     <button
@@ -1212,14 +1740,24 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
                       Role
                     </label>
-                    <select
-                      value={editRole}
-                      onChange={e => setEditRole(e.target.value as any)}
-                      className="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
-                    >
-                      <option value="USER">USER (Operator - Tasks & Shift Handover)</option>
-                      <option value="ADMIN">ADMIN (Full administrative access & settings)</option>
-                    </select>
+                    {currentUser.role === 'ADMIN' ? (
+                      <select
+                        value={editRole}
+                        onChange={e => setEditRole(e.target.value as any)}
+                        className="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
+                      >
+                        <option value="USER">USER (Operator - Tasks &amp; Shift Handover)</option>
+                        <option value="SUPERVISOR">SUPERVISOR (Elevated - Shifts, Holidays, Users, Categories, Logs)</option>
+                        <option value="ADMIN">ADMIN (Full administrative system access)</option>
+                      </select>
+                    ) : (
+                      <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 text-xs">
+                        <span className="font-semibold text-slate-900 dark:text-white">{editingUser.role}</span>
+                        <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                          Only system administrators can reassign user roles.
+                        </p>
+                      </div>
+                    )}
                   </div>
 
                   <div>
@@ -1395,7 +1933,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 </p>
               </div>
 
-              {currentUser.role === 'ADMIN' ? (
+              {canManageOperations ? (
                 <div className="flex items-center gap-2">
                   <span className="text-[11px] font-semibold text-slate-400 hidden sm:inline">Presets:</span>
                   <button
@@ -1422,7 +1960,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 </div>
               ) : (
                 <span className="px-2.5 py-1 rounded-lg bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300 text-xs font-semibold border border-amber-200 dark:border-amber-800">
-                  Read-Only Mode (Admin required to edit)
+                  Read-Only Mode
                 </span>
               )}
             </div>
@@ -1448,7 +1986,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                         </label>
                         <input
                           type="time"
-                          disabled={currentUser.role !== 'ADMIN'}
+                          disabled={!canManageOperations}
                           value={settings.morning_start}
                           onChange={e => setSettings({ ...settings, morning_start: e.target.value })}
                           required
@@ -1461,7 +1999,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                         </label>
                         <input
                           type="time"
-                          disabled={currentUser.role !== 'ADMIN'}
+                          disabled={!canManageOperations}
                           value={settings.morning_end}
                           onChange={e => setSettings({ ...settings, morning_end: e.target.value, mid_start: e.target.value })}
                           required
@@ -1489,7 +2027,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                         </label>
                         <input
                           type="time"
-                          disabled={currentUser.role !== 'ADMIN'}
+                          disabled={!canManageOperations}
                           value={settings.mid_start}
                           onChange={e => setSettings({ ...settings, mid_start: e.target.value })}
                           required
@@ -1502,7 +2040,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                         </label>
                         <input
                           type="time"
-                          disabled={currentUser.role !== 'ADMIN'}
+                          disabled={!canManageOperations}
                           value={settings.mid_end}
                           onChange={e => setSettings({ ...settings, mid_end: e.target.value, night_start: e.target.value })}
                           required
@@ -1530,7 +2068,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                         </label>
                         <input
                           type="time"
-                          disabled={currentUser.role !== 'ADMIN'}
+                          disabled={!canManageOperations}
                           value={settings.night_start}
                           onChange={e => setSettings({ ...settings, night_start: e.target.value })}
                           required
@@ -1543,7 +2081,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                         </label>
                         <input
                           type="time"
-                          disabled={currentUser.role !== 'ADMIN'}
+                          disabled={!canManageOperations}
                           value={settings.night_end}
                           onChange={e => setSettings({ ...settings, night_end: e.target.value })}
                           required
@@ -1557,7 +2095,769 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   </div>
                 </div>
 
-                {currentUser.role === 'ADMIN' && (
+                {/* Weekend & Holiday On-Call Shift Configuration */}
+                <div className="p-5 rounded-xl border border-indigo-200 dark:border-indigo-900/60 bg-indigo-50/40 dark:bg-indigo-950/20 space-y-4">
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <PhoneForwarded className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
+                        <h4 className="font-bold text-sm text-indigo-950 dark:text-indigo-200">
+                          Weekend &amp; Official Holiday Single-Operator On-Call Duty
+                        </h4>
+                      </div>
+                      <p className="text-xs text-indigo-900/80 dark:text-indigo-300/80 mt-1 max-w-2xl leading-relaxed">
+                        During Fridays, Saturdays, and designated official holidays, operations are assigned to a single on-call engineer covering the entire 24-hour cycle. The on-call operator handles urgent tasks, reviews carried-over items, and seamlessly hands over to the next day&apos;s on-call engineer.
+                      </p>
+                    </div>
+                    <span className="text-[10px] font-black px-2.5 py-1 rounded-md bg-indigo-600 text-white uppercase tracking-wider">
+                      24H On-Call
+                    </span>
+                  </div>
+
+                  {/* Weekend On-Call Policy & Shift Mode Option */}
+                  <div className="p-4 rounded-xl bg-white dark:bg-slate-800/80 border border-indigo-100 dark:border-indigo-900/40 space-y-3">
+                    <label className="flex items-center gap-3 text-xs font-bold text-slate-800 dark:text-slate-200 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        disabled={!canManageOperations}
+                        checked={settings.weekend_oncall_enabled !== 0}
+                        onChange={e => setSettings({ ...settings, weekend_oncall_enabled: e.target.checked ? 1 : 0 })}
+                        className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                      />
+                      <span>Enable Weekend (Friday &amp; Saturday) Dedicated Operations Rules</span>
+                    </label>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400 pl-7">
+                      Configure how shifts operate during weekends (Fridays &amp; Saturdays) and official company holidays.
+                    </p>
+
+                    {/* Operational Shift Mode Selector for Weekends & Official Holidays */}
+                    <div className="pl-7 pt-2 space-y-2 border-t border-slate-100 dark:border-slate-700/60 mt-2">
+                      <span className="block text-xs font-bold text-slate-700 dark:text-slate-300">
+                        Shift Mode for Weekends &amp; Official Holidays:
+                      </span>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                        <label
+                          className={`p-3 rounded-xl border text-xs cursor-pointer transition-all flex items-start gap-2.5 ${
+                            (settings.weekend_holiday_shift_mode || 'SINGLE_OPERATOR_24H') === 'SINGLE_OPERATOR_24H'
+                              ? 'bg-indigo-50/80 dark:bg-indigo-950/50 border-indigo-400 dark:border-indigo-600 ring-1 ring-indigo-500/30'
+                              : 'bg-slate-50/70 dark:bg-slate-900/40 border-slate-200 dark:border-slate-700 hover:border-slate-300'
+                          }`}
+                        >
+                          <input
+                            type="radio"
+                            name="weekend_holiday_shift_mode"
+                            disabled={!canManageOperations}
+                            checked={(settings.weekend_holiday_shift_mode || 'SINGLE_OPERATOR_24H') === 'SINGLE_OPERATOR_24H'}
+                            onChange={() => setSettings({ ...settings, weekend_holiday_shift_mode: 'SINGLE_OPERATOR_24H' })}
+                            className="mt-0.5 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                          />
+                          <div className="space-y-1">
+                            <span className="font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
+                              <span>Single 24H On-Call Duty</span>
+                              <span className="text-[9px] font-black uppercase px-1.5 py-0.2 rounded bg-indigo-600 text-white">1 Operator</span>
+                            </span>
+                            <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-normal">
+                              One engineer holds duty for the entire 24 hours alone. Standard 3-shift rotation is collapsed into a single continuous 24H cycle.
+                            </p>
+                          </div>
+                        </label>
+
+                        <label
+                          className={`p-3 rounded-xl border text-xs cursor-pointer transition-all flex items-start gap-2.5 ${
+                            settings.weekend_holiday_shift_mode === 'THREE_SHIFTS'
+                              ? 'bg-indigo-50/80 dark:bg-indigo-950/50 border-indigo-400 dark:border-indigo-600 ring-1 ring-indigo-500/30'
+                              : 'bg-slate-50/70 dark:bg-slate-900/40 border-slate-200 dark:border-slate-700 hover:border-slate-300'
+                          }`}
+                        >
+                          <input
+                            type="radio"
+                            name="weekend_holiday_shift_mode"
+                            disabled={!canManageOperations}
+                            checked={settings.weekend_holiday_shift_mode === 'THREE_SHIFTS'}
+                            onChange={() => setSettings({ ...settings, weekend_holiday_shift_mode: 'THREE_SHIFTS' })}
+                            className="mt-0.5 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                          />
+                          <div className="space-y-1">
+                            <span className="font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
+                              <span>Standard 3 Shifts Rotation</span>
+                              <span className="text-[9px] font-black uppercase px-1.5 py-0.2 rounded bg-slate-600 text-white">3 Shifts</span>
+                            </span>
+                            <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-normal">
+                              Keep Morning, Mid, and Night shifts open and separate even on weekends and holidays if team rotation is desired.
+                            </p>
+                          </div>
+                        </label>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Official Company Holidays Manager */}
+                  {(() => {
+                    const allHolidays = getHolidayList(settings.holiday_dates);
+                    const todayStr = getTodayDateStr(settings.timezone);
+
+                    const holidayDetailsList = allHolidays.map(date => ({
+                      date,
+                      ...getHolidayDetails(date)
+                    }));
+
+                    const activeToday = holidayDetailsList.filter(h => h.status === 'TODAY');
+                    const upcomingList = holidayDetailsList.filter(h => h.status === 'UPCOMING');
+                    const pastList = holidayDetailsList.filter(h => h.status === 'PAST');
+
+                    const filteredList = holidayFilter === 'ALL'
+                      ? holidayDetailsList
+                      : holidayFilter === 'UPCOMING'
+                        ? holidayDetailsList.filter(h => h.status === 'UPCOMING' || h.status === 'TODAY')
+                        : pastList;
+
+                    return (
+                      <div className="p-5 rounded-xl bg-white dark:bg-slate-800/90 border border-slate-200 dark:border-slate-700/80 shadow-xs space-y-4">
+                        {/* Section Header */}
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100 dark:border-slate-700/60">
+                          <div className="space-y-1">
+                            <div className="flex items-center gap-2">
+                              <CalendarDays className="w-5 h-5 text-[#0F4C81] dark:text-sky-400" />
+                              <h5 className="font-bold text-sm text-slate-900 dark:text-white">
+                                Official Company Holidays &amp; 24H On-Call Schedule
+                              </h5>
+                            </div>
+                            <p className="text-xs text-slate-500 dark:text-slate-400">
+                              Scheduled dates where standard 3-shift rotation is replaced by a dedicated 24-hour on-call operator.
+                            </p>
+                          </div>
+
+                          {/* Quick Stats Badges */}
+                          <div className="flex items-center gap-2 flex-wrap">
+                            {activeToday.length > 0 && (
+                              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-emerald-100 dark:bg-emerald-950/80 text-emerald-800 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-700">
+                                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping"></span>
+                                Holiday Active Today
+                              </span>
+                            )}
+                            <span className="text-xs font-semibold px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300">
+                              {allHolidays.length} Scheduled
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Interactive Add Holiday Bar */}
+                        {canManageOperations && (
+                          <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200/80 dark:border-slate-700/60 space-y-3">
+                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                              <label className="text-xs font-bold text-slate-800 dark:text-slate-200">
+                                Schedule Official Holiday Dates
+                              </label>
+
+                              {/* Mode Switcher: Single Day vs Date Range */}
+                              <div className="flex items-center gap-1 p-0.5 bg-slate-200/70 dark:bg-slate-800 rounded-lg border border-slate-300/60 dark:border-slate-700">
+                                <button
+                                  type="button"
+                                  onClick={() => { setHolidayMode('SINGLE'); setHolidayFeedback(null); }}
+                                  className={`px-3 py-1 text-xs font-bold rounded-md transition-all cursor-pointer ${
+                                    holidayMode === 'SINGLE'
+                                      ? 'bg-white dark:bg-slate-700 text-[#0F4C81] dark:text-sky-400 shadow-2xs'
+                                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                                  }`}
+                                >
+                                  Single Day
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => { setHolidayMode('RANGE'); setHolidayFeedback(null); }}
+                                  className={`px-3 py-1 text-xs font-bold rounded-md transition-all cursor-pointer ${
+                                    holidayMode === 'RANGE'
+                                      ? 'bg-white dark:bg-slate-700 text-[#0F4C81] dark:text-sky-400 shadow-2xs'
+                                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                                  }`}
+                                >
+                                  Date Range (From – To)
+                                </button>
+                              </div>
+                            </div>
+
+                            {/* Mode 1: Single Day */}
+                            {holidayMode === 'SINGLE' && (() => {
+                              const singleValidation = (singleDateTouched || singleDateInput.trim().length > 0)
+                                ? validateSingleDateStr(singleDateInput)
+                                : null;
+                              const isSingleInvalid = Boolean(singleValidation && !singleValidation.isValid);
+                              const isSingleValid = Boolean(singleValidation && singleValidation.isValid);
+
+                              return (
+                                <div className="space-y-2">
+                                  <div className="flex flex-wrap items-center gap-2.5">
+                                    <div className="relative flex items-center">
+                                      {/* Text input with strict live YYYY-MM-DD validation */}
+                                      <input
+                                        type="text"
+                                        id="holiday-single-date-input"
+                                        placeholder="YYYY-MM-DD (e.g. 2026-09-18)"
+                                        value={singleDateInput}
+                                        onChange={e => {
+                                          setSingleDateInput(e.target.value);
+                                          setSingleDateTouched(true);
+                                          setHolidayPickerDate(e.target.value);
+                                        }}
+                                        className={`px-3 py-2 text-xs font-mono font-medium rounded-lg border outline-none transition-all shadow-xs w-64 ${
+                                          isSingleInvalid
+                                            ? 'border-rose-500 ring-2 ring-rose-400/50 bg-rose-50/70 dark:bg-rose-950/30 text-rose-900 dark:text-rose-100 placeholder:text-rose-300'
+                                            : isSingleValid
+                                              ? 'border-emerald-500 ring-2 ring-emerald-400/40 bg-emerald-50/50 dark:bg-emerald-950/20 text-emerald-900 dark:text-emerald-100'
+                                              : 'border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-2 focus:ring-[#0F4C81]'
+                                        }`}
+                                      />
+
+                                      {/* Hidden native date picker synced with text box */}
+                                      <input
+                                        type="date"
+                                        aria-label="Pick date from calendar"
+                                        value={validateSingleDateStr(singleDateInput).isValid ? singleDateInput : ''}
+                                        onChange={e => {
+                                          setSingleDateInput(e.target.value);
+                                          setSingleDateTouched(true);
+                                          setHolidayPickerDate(e.target.value);
+                                        }}
+                                        className="ml-1.5 px-2 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 cursor-pointer shadow-xs hover:bg-slate-50 dark:hover:bg-slate-700"
+                                        title="Choose from calendar popup"
+                                      />
+                                    </div>
+
+                                    <button
+                                      type="button"
+                                      id="btn-add-single-holiday"
+                                      disabled={!isSingleValid}
+                                      onClick={() => handleAddHolidayDate(singleDateInput)}
+                                      className="px-4 py-2 rounded-lg bg-[#0F4C81] hover:bg-[#16324F] disabled:opacity-40 text-white text-xs font-bold transition-all shadow-xs flex items-center gap-1.5 cursor-pointer disabled:cursor-not-allowed"
+                                    >
+                                      <CalendarPlus className="w-4 h-4" />
+                                      <span>Add Single Day</span>
+                                    </button>
+
+                                    <div className="h-4 w-px bg-slate-200 dark:bg-slate-700 hidden sm:block mx-1" />
+
+                                    <span className="text-[11px] font-semibold text-slate-400 dark:text-slate-500 hidden sm:inline">
+                                      Quick Add:
+                                    </span>
+
+                                    <button
+                                      type="button"
+                                      onClick={() => handleQuickAdd(0)}
+                                      className="px-3 py-1.5 rounded-lg bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 text-xs font-semibold transition-colors flex items-center gap-1 cursor-pointer shadow-2xs"
+                                      title="Schedule today as an official holiday"
+                                    >
+                                      <Sparkles className="w-3.5 h-3.5 text-amber-500" />
+                                      <span>Today ({todayStr})</span>
+                                    </button>
+
+                                    <button
+                                      type="button"
+                                      onClick={() => handleQuickAdd(1)}
+                                      className="px-3 py-1.5 rounded-lg bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 text-xs font-semibold transition-colors flex items-center gap-1 cursor-pointer shadow-2xs"
+                                      title="Schedule tomorrow as an official holiday"
+                                    >
+                                      <CalendarPlus className="w-3.5 h-3.5 text-indigo-500" />
+                                      <span>+ Tomorrow ({getOffsetDateStr(1, settings.timezone)})</span>
+                                    </button>
+                                  </div>
+
+                                  {/* Real-time validation feedback directly under the text box */}
+                                  {isSingleInvalid && (
+                                    <div className="flex items-center gap-1.5 text-xs text-rose-600 dark:text-rose-400 font-semibold pl-0.5">
+                                      <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                                      <span>
+                                        {singleValidation?.error || 'Invalid date format. You must enter a complete date in YYYY-MM-DD format (e.g. 2026-09-18).'}
+                                      </span>
+                                    </div>
+                                  )}
+
+                                  {isSingleValid && (
+                                    <div className="flex items-center gap-1.5 text-xs text-emerald-600 dark:text-emerald-400 font-semibold pl-0.5">
+                                      <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                                      <span>
+                                        Ready to add: {singleValidation?.dayName}, {singleValidation?.formatted}
+                                      </span>
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })()}
+
+                            {/* Mode 2: Date Range (From - To) */}
+                            {holidayMode === 'RANGE' && (
+                              <div className="space-y-2.5">
+                                <div className="flex flex-wrap items-end gap-2.5">
+                                  <div>
+                                    <span className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1">
+                                      From Date
+                                    </span>
+                                    <input
+                                      type="date"
+                                      value={holidayRangeStart}
+                                      onChange={e => setHolidayRangeStart(e.target.value)}
+                                      className="px-3 py-2 text-xs font-mono font-medium rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-xs focus:ring-2 focus:ring-[#0F4C81] outline-none cursor-pointer"
+                                    />
+                                  </div>
+
+                                  <div className="pb-2.5 hidden sm:block text-slate-400">
+                                    <ArrowRight className="w-4 h-4" />
+                                  </div>
+
+                                  <div>
+                                    <span className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1">
+                                      To Date
+                                    </span>
+                                    <input
+                                      type="date"
+                                      value={holidayRangeEnd}
+                                      onChange={e => setHolidayRangeEnd(e.target.value)}
+                                      className="px-3 py-2 text-xs font-mono font-medium rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-xs focus:ring-2 focus:ring-[#0F4C81] outline-none cursor-pointer"
+                                    />
+                                  </div>
+
+                                  {(() => {
+                                    const rangeList = getDatesInRange(holidayRangeStart, holidayRangeEnd);
+                                    const isValid = Boolean(
+                                      holidayRangeStart &&
+                                      holidayRangeEnd &&
+                                      holidayRangeStart <= holidayRangeEnd &&
+                                      rangeList.length > 0
+                                    );
+                                    return (
+                                      <button
+                                        type="button"
+                                        disabled={!isValid}
+                                        onClick={handleAddRangeHolidays}
+                                        className="px-4 py-2 rounded-lg bg-[#0F4C81] hover:bg-[#16324F] disabled:opacity-40 text-white text-xs font-bold transition-all shadow-xs flex items-center gap-1.5 cursor-pointer disabled:cursor-not-allowed"
+                                      >
+                                        <CalendarPlus className="w-4 h-4" />
+                                        <span>
+                                          {rangeList.length > 0
+                                            ? `Add Range (${rangeList.length} Days)`
+                                            : 'Add Date Range'}
+                                        </span>
+                                      </button>
+                                    );
+                                  })()}
+                                </div>
+
+                                {/* Range Quick Shortcuts */}
+                                <div className="flex items-center gap-2 flex-wrap text-xs text-slate-500 dark:text-slate-400 pt-0.5">
+                                  <span className="text-[11px] font-semibold text-slate-400">
+                                    Range Shortcuts:
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      const start = getTodayDateStr(settings.timezone);
+                                      setHolidayRangeStart(start);
+                                      setHolidayRangeEnd(getOffsetDateStr(2, settings.timezone));
+                                    }}
+                                    className="px-2.5 py-1 rounded-md bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 text-[11px] font-medium transition-colors cursor-pointer"
+                                  >
+                                    3 Days (Weekend)
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      const start = getTodayDateStr(settings.timezone);
+                                      setHolidayRangeStart(start);
+                                      setHolidayRangeEnd(getOffsetDateStr(4, settings.timezone));
+                                    }}
+                                    className="px-2.5 py-1 rounded-md bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 text-[11px] font-medium transition-colors cursor-pointer"
+                                  >
+                                    5 Days (Holiday Vacation)
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      const start = getTodayDateStr(settings.timezone);
+                                      setHolidayRangeStart(start);
+                                      setHolidayRangeEnd(getOffsetDateStr(6, settings.timezone));
+                                    }}
+                                    className="px-2.5 py-1 rounded-md bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 text-[11px] font-medium transition-colors cursor-pointer"
+                                  >
+                                    7 Days (Full Week)
+                                  </button>
+                                </div>
+                              </div>
+                            )}
+
+                            {/* Real-Time User Feedback Banner */}
+                            {holidayFeedback && (
+                              <div
+                                className={`p-2.5 rounded-lg text-xs flex items-center justify-between gap-2 transition-all ${
+                                  holidayFeedback.type === 'success'
+                                    ? 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-200 border border-emerald-200 dark:border-emerald-800'
+                                    : holidayFeedback.type === 'error'
+                                      ? 'bg-rose-50 dark:bg-rose-950/60 text-rose-800 dark:text-rose-200 border border-rose-200 dark:border-rose-800'
+                                      : 'bg-indigo-50 dark:bg-indigo-950/60 text-indigo-800 dark:text-indigo-200 border border-indigo-200 dark:border-indigo-800'
+                                }`}
+                              >
+                                <div className="flex items-center gap-2">
+                                  {holidayFeedback.type === 'success' ? (
+                                    <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                                  ) : holidayFeedback.type === 'error' ? (
+                                    <AlertCircle className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0" />
+                                  ) : (
+                                    <Sparkles className="w-4 h-4 text-indigo-600 dark:text-indigo-400 shrink-0" />
+                                  )}
+                                  <span className="font-medium">{holidayFeedback.message}</span>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => setHolidayFeedback(null)}
+                                  className="p-1 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 rounded cursor-pointer"
+                                  title="Dismiss message"
+                                >
+                                  <X className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Interactive Holiday Tags Cloud with Direct (X) Delete on each chip */}
+                        {allHolidays.length > 0 && (
+                          <div className="p-3.5 rounded-xl bg-slate-50/80 dark:bg-slate-900/50 border border-slate-200/80 dark:border-slate-800 space-y-2">
+                            <div className="flex items-center justify-between text-xs">
+                              <span className="font-bold text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
+                                <Calendar className="w-3.5 h-3.5 text-[#0F4C81] dark:text-sky-400" />
+                                <span>Entered Holidays (Click &lsquo;x&rsquo; to remove any date):</span>
+                              </span>
+                              <span className="text-[11px] font-mono text-slate-500 dark:text-slate-400">
+                                {allHolidays.length} date{allHolidays.length === 1 ? '' : 's'} registered
+                              </span>
+                            </div>
+
+                            <div className="flex flex-wrap gap-1.5 pt-1">
+                              {allHolidays.map(dateStr => {
+                                const details = getHolidayDetails(dateStr);
+                                const isToday = details.status === 'TODAY';
+                                return (
+                                  <span
+                                    key={dateStr}
+                                    className={`inline-flex items-center gap-1.5 pl-2.5 pr-1 py-1 rounded-lg border text-xs transition-all shadow-2xs ${
+                                      isToday
+                                        ? 'bg-emerald-50 dark:bg-emerald-950/60 border-emerald-300 dark:border-emerald-700 text-emerald-900 dark:text-emerald-100 font-semibold ring-1 ring-emerald-400/40'
+                                        : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-200'
+                                    }`}
+                                  >
+                                    <span className="font-mono text-[11px] text-slate-500 dark:text-slate-400">
+                                      {dateStr}
+                                    </span>
+                                    <span className="text-slate-300 dark:text-slate-600">•</span>
+                                    <span className="font-semibold text-slate-700 dark:text-slate-300">
+                                      {details.dayName.slice(0, 3)}
+                                    </span>
+                                    {isToday && (
+                                      <span className="text-[10px] px-1.5 py-0.5 bg-emerald-200 dark:bg-emerald-900 text-emerald-800 dark:text-emerald-200 rounded font-bold">
+                                        Today
+                                      </span>
+                                    )}
+                                    {canManageOperations && (
+                                      <button
+                                        type="button"
+                                        onClick={() => handleRemoveHolidayDate(dateStr)}
+                                        className="p-1 ml-0.5 text-slate-400 hover:text-rose-600 hover:bg-rose-100 dark:hover:bg-rose-950/80 rounded-md transition-colors cursor-pointer"
+                                        title={`Remove ${details.formatted} (${dateStr})`}
+                                        aria-label={`Remove ${dateStr}`}
+                                      >
+                                        <X className="w-3.5 h-3.5" />
+                                      </button>
+                                    )}
+                                  </span>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Filter Tabs & Counter */}
+                        {allHolidays.length > 0 && (
+                          <div className="flex items-center justify-between gap-2 pt-1 flex-wrap">
+                            <div className="flex items-center gap-1 p-0.5 rounded-lg bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+                              <button
+                                type="button"
+                                onClick={() => setHolidayFilter('ALL')}
+                                className={`px-3 py-1 rounded-md text-xs font-semibold transition-all cursor-pointer ${
+                                  holidayFilter === 'ALL'
+                                    ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-xs'
+                                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                                }`}
+                              >
+                                All ({allHolidays.length})
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setHolidayFilter('UPCOMING')}
+                                className={`px-3 py-1 rounded-md text-xs font-semibold transition-all cursor-pointer ${
+                                  holidayFilter === 'UPCOMING'
+                                    ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-xs'
+                                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                                }`}
+                              >
+                                Active &amp; Upcoming ({activeToday.length + upcomingList.length})
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setHolidayFilter('PAST')}
+                                className={`px-3 py-1 rounded-md text-xs font-semibold transition-all cursor-pointer ${
+                                  holidayFilter === 'PAST'
+                                    ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-xs'
+                                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                                }`}
+                              >
+                                Past ({pastList.length})
+                              </button>
+                            </div>
+
+                            {/* Non-Blocking Inline Clear All with Confirmation */}
+                            {currentUser.role === 'ADMIN' && (
+                              <div>
+                                {confirmClearAll ? (
+                                  <div className="flex items-center gap-2 p-1.5 rounded-lg bg-rose-50 dark:bg-rose-950/60 border border-rose-200 dark:border-rose-800">
+                                    <span className="text-xs font-semibold text-rose-800 dark:text-rose-200">
+                                      Clear all {allHolidays.length} holiday dates?
+                                    </span>
+                                    <button
+                                      type="button"
+                                      onClick={handleClearAllHolidays}
+                                      className="px-2.5 py-1 rounded bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold transition-colors cursor-pointer shadow-2xs"
+                                    >
+                                      Yes, Clear All
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => setConfirmClearAll(false)}
+                                      className="px-2 py-1 rounded text-xs font-medium text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors cursor-pointer"
+                                    >
+                                      Cancel
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={() => setConfirmClearAll(true)}
+                                    className="text-xs text-rose-600 dark:text-rose-400 hover:text-rose-700 dark:hover:text-rose-300 font-medium hover:underline cursor-pointer flex items-center gap-1"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                    <span>Clear All Holidays</span>
+                                  </button>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Holiday List / Data Table */}
+                        {allHolidays.length === 0 ? (
+                          <div className="p-8 text-center rounded-xl bg-slate-50 dark:bg-slate-900/40 border border-dashed border-slate-300 dark:border-slate-700/80 space-y-2">
+                            <CalendarDays className="w-8 h-8 mx-auto text-slate-400 dark:text-slate-600" />
+                            <h6 className="font-bold text-sm text-slate-700 dark:text-slate-300">
+                              No Official Holidays Scheduled
+                            </h6>
+                            <p className="text-xs text-slate-500 dark:text-slate-400 max-w-md mx-auto">
+                              Select single dates, enter a date range (From – To), or click Today/Tomorrow to activate 24-hour on-call coverage for official holidays.
+                            </p>
+                          </div>
+                        ) : filteredList.length === 0 ? (
+                          <div className="p-6 text-center rounded-xl bg-slate-50 dark:bg-slate-900/40 border border-slate-200 dark:border-slate-700 text-xs text-slate-500">
+                            No holidays match the selected filter.
+                          </div>
+                        ) : (
+                          <div className="overflow-hidden rounded-xl border border-slate-200 dark:border-slate-700/80">
+                            <table className="w-full text-left border-collapse">
+                              <thead>
+                                <tr className="bg-slate-50 dark:bg-slate-800/80 text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 border-b border-slate-200 dark:border-slate-700">
+                                  <th className="px-4 py-2.5">Date</th>
+                                  <th className="px-4 py-2.5">Day</th>
+                                  <th className="px-4 py-2.5">Duty Coverage</th>
+                                  <th className="px-4 py-2.5">Operational Status</th>
+                                  {currentUser.role === 'ADMIN' && (
+                                    <th className="px-4 py-2.5 text-right">Action</th>
+                                  )}
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-slate-100 dark:divide-slate-800 text-xs">
+                                {filteredList.map(h => (
+                                  <tr
+                                    key={h.date}
+                                    className={`transition-colors ${
+                                      h.status === 'TODAY'
+                                        ? 'bg-emerald-50/50 dark:bg-emerald-950/20 hover:bg-emerald-50 dark:hover:bg-emerald-950/30 font-medium'
+                                        : 'hover:bg-slate-50/80 dark:hover:bg-slate-800/40'
+                                    }`}
+                                  >
+                                    {/* Date */}
+                                    <td className="px-4 py-3">
+                                      <div className="flex items-center gap-2.5">
+                                        <div className={`p-1.5 rounded-lg ${
+                                          h.status === 'TODAY'
+                                            ? 'bg-emerald-100 dark:bg-emerald-900/50 text-emerald-700 dark:text-emerald-300'
+                                            : 'bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600 dark:text-indigo-400'
+                                        }`}>
+                                          <Calendar className="w-4 h-4" />
+                                        </div>
+                                        <div>
+                                          <div className="font-bold text-slate-900 dark:text-white">
+                                            {h.formatted}
+                                          </div>
+                                          <div className="font-mono text-[11px] text-slate-500 dark:text-slate-400">
+                                            {h.date}
+                                          </div>
+                                        </div>
+                                      </div>
+                                    </td>
+
+                                    {/* Day of Week */}
+                                    <td className="px-4 py-3">
+                                      <span className="inline-block px-2.5 py-1 rounded-md text-[11px] font-semibold bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700">
+                                        {h.dayName}
+                                      </span>
+                                    </td>
+
+                                    {/* Duty Coverage */}
+                                    <td className="px-4 py-3">
+                                      <span className="font-medium text-slate-700 dark:text-slate-300">
+                                        24H Full-Day On-Call
+                                      </span>
+                                    </td>
+
+                                    {/* Operational Status */}
+                                    <td className="px-4 py-3">
+                                      {h.status === 'TODAY' ? (
+                                        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-700">
+                                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                                          Active Today
+                                        </span>
+                                      ) : h.status === 'UPCOMING' ? (
+                                        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-sky-50 dark:bg-sky-950/60 text-sky-700 dark:text-sky-300 border border-sky-200 dark:border-sky-800">
+                                          In {h.diffDays} day{h.diffDays === 1 ? '' : 's'}
+                                        </span>
+                                      ) : (
+                                        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-medium bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400">
+                                          Past ({Math.abs(h.diffDays)}d ago)
+                                        </span>
+                                      )}
+                                    </td>
+
+                                    {/* Action Column with Explicit (X) Button */}
+                                    {currentUser.role === 'ADMIN' && (
+                                      <td className="px-4 py-3 text-right">
+                                        <button
+                                          type="button"
+                                          onClick={() => handleRemoveHolidayDate(h.date)}
+                                          className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold text-rose-600 dark:text-rose-400 hover:text-white hover:bg-rose-600 dark:hover:bg-rose-600 rounded-lg border border-rose-200 dark:border-rose-800 transition-all cursor-pointer shadow-2xs"
+                                          title={`Remove ${h.formatted}`}
+                                        >
+                                          <X className="w-3.5 h-3.5" />
+                                          <span>Remove</span>
+                                        </button>
+                                      </td>
+                                    )}
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
+
+                        {/* Collapsible Bulk Import / Export Tool */}
+                        <div className="pt-2 border-t border-slate-100 dark:border-slate-700/60">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setShowBulkImport(!showBulkImport);
+                              setBulkImportFeedback(null);
+                            }}
+                            className="inline-flex items-center gap-1.5 text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:text-indigo-700 dark:hover:text-indigo-300 transition-colors cursor-pointer"
+                          >
+                            <FileText className="w-3.5 h-3.5" />
+                            <span>Bulk Import / Export Dates (CSV or Spreadsheet)</span>
+                            {showBulkImport ? (
+                              <ChevronUp className="w-3.5 h-3.5" />
+                            ) : (
+                              <ChevronDown className="w-3.5 h-3.5" />
+                            )}
+                          </button>
+
+                          {showBulkImport && (
+                            <div className="mt-3 p-4 rounded-xl bg-slate-50 dark:bg-slate-900/80 border border-slate-200 dark:border-slate-700 space-y-3">
+                              <div>
+                                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                                  Paste Dates (Comma, space, or newline separated)
+                                </label>
+                                <textarea
+                                  rows={3}
+                                  value={bulkImportText}
+                                  onChange={e => setBulkImportText(e.target.value)}
+                                  placeholder="e.g. 2026-01-07, 2026-04-25, 2026-05-01&#10;2026-06-18, 2026-07-23"
+                                  className="w-full px-3 py-2 text-xs font-mono rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white placeholder:text-slate-400 outline-none focus:ring-1 focus:ring-[#0F4C81]"
+                                />
+                                <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1">
+                                  Dates must follow the YYYY-MM-DD format. Validation happens only when you click &quot;Import Dates&quot;.
+                                </p>
+                              </div>
+
+                              {bulkImportFeedback && (
+                                <div className={`p-2.5 rounded-lg text-xs flex items-center gap-2 ${
+                                  bulkImportFeedback.type === 'success'
+                                    ? 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-200 border border-emerald-200 dark:border-emerald-800'
+                                    : 'bg-rose-50 dark:bg-rose-950/60 text-rose-800 dark:text-rose-200 border border-rose-200 dark:border-rose-800'
+                                }`}>
+                                  {bulkImportFeedback.type === 'success' ? (
+                                    <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                                  ) : (
+                                    <AlertCircle className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0" />
+                                  )}
+                                  <span>{bulkImportFeedback.message}</span>
+                                </div>
+                              )}
+
+                              <div className="flex items-center justify-between gap-2 pt-1 flex-wrap">
+                                <button
+                                  type="button"
+                                  disabled={currentUser.role !== 'ADMIN' || !bulkImportText.trim()}
+                                  onClick={handleBulkImportSubmit}
+                                  className="px-4 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white text-xs font-bold transition-colors cursor-pointer"
+                                >
+                                  Import Dates
+                                </button>
+
+                                {allHolidays.length > 0 && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      navigator.clipboard.writeText(allHolidays.join(', '));
+                                      setCopiedHolidays(true);
+                                      setTimeout(() => setCopiedHolidays(false), 2000);
+                                    }}
+                                    className="px-3 py-1.5 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 text-xs font-semibold transition-colors flex items-center gap-1.5 cursor-pointer"
+                                  >
+                                    {copiedHolidays ? (
+                                      <>
+                                        <Check className="w-3.5 h-3.5 text-emerald-500" />
+                                        <span>Copied!</span>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <Copy className="w-3.5 h-3.5 text-slate-500" />
+                                        <span>Copy All Dates</span>
+                                      </>
+                                    )}
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </div>
+
+                {canManageOperations && (
                   <div className="flex justify-end gap-3 pt-2">
                     <button
                       type="submit"
@@ -1575,38 +2875,399 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         </div>
       )}
 
+      {/* TAB: TASK CATEGORIES (Admin-defined categories) */}
+      {subTab === 'categories' && (
+        <div className="space-y-6">
+          <div className="bg-white dark:bg-[#16324F] p-6 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xs space-y-5">
+            <div className="flex items-start justify-between">
+              <div>
+                <div className="flex items-center gap-2">
+                  <Tag className="w-5 h-5 text-[#0F4C81] dark:text-blue-400" />
+                  <h3 className="font-bold text-base text-slate-900 dark:text-white">Task Categories Management</h3>
+                </div>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 max-w-xl leading-relaxed">
+                  System administrators and supervisors have control over operational categories available across the system. Categories configured here populate the category selection list when operators create or filter operational tasks.
+                </p>
+              </div>
+            </div>
+
+            {/* Create Category Form */}
+            {canManageOperations ? (
+              <form onSubmit={handleAddCategory} className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/60 space-y-3">
+                <h4 className="text-xs font-bold text-slate-700 dark:text-slate-200 flex items-center gap-1.5">
+                  <Plus className="w-3.5 h-3.5 text-[#0F4C81] dark:text-blue-400" />
+                  Add New Task Category
+                </h4>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
+                  <div className="sm:col-span-2">
+                    <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
+                      Category Name
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="e.g. Network, Hardware, Security, Deployment..."
+                      value={newCatName}
+                      onChange={e => setNewCatName(e.target.value)}
+                      className="w-full px-3 py-2 text-xs rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-white focus:ring-2 focus:ring-[#0F4C81]"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
+                      Badge Color
+                    </label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="color"
+                        value={newCatColor}
+                        onChange={e => setNewCatColor(e.target.value)}
+                        className="h-8 w-12 rounded cursor-pointer border border-slate-300 dark:border-slate-600 p-0.5 bg-white"
+                      />
+                      <button
+                        type="submit"
+                        disabled={catLoading || !newCatName.trim()}
+                        className="flex-1 py-2 px-3 rounded-lg bg-[#0F4C81] hover:bg-[#16324F] disabled:opacity-50 text-white text-xs font-bold transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        {catLoading ? 'Adding...' : 'Add Category'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </form>
+            ) : (
+              <div className="p-3 rounded-lg bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-300 text-xs">
+                Only system administrators and supervisors can add, modify, or remove task categories.
+              </div>
+            )}
+
+            {/* Existing Categories List */}
+            <div className="space-y-3 pt-2">
+              <div className="flex items-center justify-between">
+                <h4 className="text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider">
+                  Active Categories ({categories.length})
+                </h4>
+                <span className="text-[11px] text-slate-400">
+                  Visible to all users when creating new tasks
+                </span>
+              </div>
+
+              {categories.length === 0 ? (
+                <div className="text-center py-8 text-xs text-slate-400 bg-slate-50 dark:bg-slate-800/40 rounded-xl border border-dashed border-slate-300 dark:border-slate-700">
+                  No categories found. Add your first category above.
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+                  {categories.map(cat => (
+                    <div
+                      key={cat.id}
+                      className="flex items-center justify-between p-3 rounded-xl border border-slate-200 dark:border-slate-700/80 bg-white dark:bg-slate-800 shadow-xs hover:border-slate-300 transition-colors"
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <span
+                          className="w-3.5 h-3.5 rounded-full shrink-0 border border-black/10 shadow-xs"
+                          style={{ backgroundColor: cat.color || '#0F4C81' }}
+                        />
+                        <span className="text-xs font-semibold text-slate-900 dark:text-white truncate">
+                          {cat.name}
+                        </span>
+                      </div>
+
+                      {canManageOperations && (
+                        confirmDeleteCatId === cat.id ? (
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <span className="text-[11px] text-rose-600 dark:text-rose-400 font-medium whitespace-nowrap">
+                              Delete?
+                            </span>
+                            <button
+                              type="button"
+                              disabled={catLoading}
+                              onClick={() => handleExecuteDeleteCategory(cat)}
+                              className="px-2 py-0.5 bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white text-[11px] font-semibold rounded-md shadow-xs transition-colors cursor-pointer"
+                            >
+                              {catLoading ? '...' : 'Yes'}
+                            </button>
+                            <button
+                              type="button"
+                              disabled={catLoading}
+                              onClick={() => setConfirmDeleteCatId(null)}
+                              className="px-2 py-0.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-700 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-200 text-[11px] font-medium rounded-md transition-colors cursor-pointer"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (categories.length <= 1) {
+                                setError('Cannot delete the last remaining category. At least one category must exist.');
+                                return;
+                              }
+                              setConfirmDeleteCatId(cat.id);
+                            }}
+                            title={`Delete category "${cat.name}"`}
+                            className="text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 p-1 rounded-md hover:bg-rose-50 dark:hover:bg-rose-950/40 transition-colors cursor-pointer shrink-0"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* TAB 4: AUDIT LOGS */}
       {subTab === 'audit' && (
-        <div className="bg-white dark:bg-[#16324F] rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-xs">
-          <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center">
-            <h3 className="font-bold text-sm text-slate-900 dark:text-white">Tamper-Evident Audit Trail (Section 44)</h3>
-            <span className="text-xs text-slate-400">{auditLogs.length} events recorded</span>
+        <div className="bg-white dark:bg-[#16324F] rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-xs space-y-4">
+          {/* Header & Export Action */}
+          <div className="p-5 border-b border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div>
+              <div className="flex items-center gap-2">
+                <Shield className="w-5 h-5 text-[#0F4C81] dark:text-blue-400" />
+                <h3 className="font-bold text-base text-slate-900 dark:text-white">Tamper-Evident Audit Trail</h3>
+              </div>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                Permanent accountability records of all ticket creations, status changes, handovers, and user logins.
+              </p>
+            </div>
+
+            <div className="flex items-center gap-3 shrink-0">
+              <span className="text-xs font-semibold px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
+                {auditLogs.length} events
+              </span>
+
+              <button
+                id="btn-export-audit-txt"
+                type="button"
+                disabled={isExportingAudit}
+                onClick={handleExportAuditTxt}
+                className="flex items-center gap-2 px-4 py-2 rounded-xl bg-[#0F4C81] hover:bg-[#16324F] disabled:opacity-50 text-white text-xs font-bold shadow-sm transition-colors cursor-pointer"
+                title="Download audit trail as a formatted .TXT text file"
+              >
+                <Download className="w-4 h-4" />
+                <span>{isExportingAudit ? 'Downloading...' : 'Export as .TXT'}</span>
+              </button>
+            </div>
           </div>
-          <div className="overflow-x-auto max-h-96">
-            <table className="w-full text-left text-xs">
-              <thead className="bg-slate-50 dark:bg-slate-800/50 text-slate-500 font-semibold uppercase text-[10px] sticky top-0">
-                <tr>
-                  <th className="py-2.5 px-3">Timestamp</th>
-                  <th className="py-2.5 px-3">User</th>
-                  <th className="py-2.5 px-3">Action</th>
-                  <th className="py-2.5 px-3">Entity</th>
-                  <th className="py-2.5 px-3">Details</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                {auditLogs.map(log => (
-                  <tr key={log.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/60">
-                    <td className="py-2 px-3 font-mono text-[11px] text-slate-400">
-                      {new Date(log.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-                    </td>
-                    <td className="py-2 px-3 font-semibold text-slate-800 dark:text-slate-200">@{log.user_name}</td>
-                    <td className="py-2 px-3 font-mono font-bold text-[10px] text-[#0F4C81] dark:text-blue-300">{log.action}</td>
-                    <td className="py-2 px-3 text-slate-500">{log.entity_type} #{log.entity_id}</td>
-                    <td className="py-2 px-3 text-slate-600 dark:text-slate-300 max-w-sm truncate">{log.details}</td>
+
+          {/* Date & User Filtering Panel */}
+          <div className="px-5 py-2">
+            <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/80 space-y-3">
+              {/* Quick Range Presets */}
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400">
+                  <Calendar className="w-3.5 h-3.5 text-[#0F4C81] dark:text-blue-400" />
+                  <span className="font-semibold uppercase tracking-wider text-[10px]">Date Presets:</span>
+                </div>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const today = new Date().toISOString().split('T')[0];
+                      setAuditFromDate(today);
+                      setAuditToDate(today);
+                      loadFilteredAuditLogs({ fromDate: today, toDate: today });
+                    }}
+                    className="px-2.5 py-1 rounded-md text-[11px] font-semibold bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-600 transition-colors cursor-pointer"
+                  >
+                    Today
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const to = new Date().toISOString().split('T')[0];
+                      const d = new Date();
+                      d.setDate(d.getDate() - 7);
+                      const from = d.toISOString().split('T')[0];
+                      setAuditFromDate(from);
+                      setAuditToDate(to);
+                      loadFilteredAuditLogs({ fromDate: from, toDate: to });
+                    }}
+                    className="px-2.5 py-1 rounded-md text-[11px] font-semibold bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-600 transition-colors cursor-pointer"
+                  >
+                    Last 7 Days
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const to = new Date().toISOString().split('T')[0];
+                      const d = new Date();
+                      d.setDate(d.getDate() - 30);
+                      const from = d.toISOString().split('T')[0];
+                      setAuditFromDate(from);
+                      setAuditToDate(to);
+                      loadFilteredAuditLogs({ fromDate: from, toDate: to });
+                    }}
+                    className="px-2.5 py-1 rounded-md text-[11px] font-semibold bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-600 transition-colors cursor-pointer"
+                  >
+                    Last 30 Days
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAuditFromDate('');
+                      setAuditToDate('');
+                      setAuditUserFilter('');
+                      setAuditSearchTerm('');
+                      loadFilteredAuditLogs({ fromDate: '', toDate: '', user: '', search: '' });
+                    }}
+                    className="px-2.5 py-1 rounded-md text-[11px] font-semibold text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 transition-colors cursor-pointer"
+                  >
+                    Clear All
+                  </button>
+                </div>
+              </div>
+
+              {/* Form Controls: From Date, To Date, User, Search */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 pt-1">
+                {/* From Date */}
+                <div>
+                  <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1">
+                    From Date:
+                  </label>
+                  <input
+                    id="audit-filter-from-date"
+                    type="date"
+                    value={auditFromDate}
+                    onChange={e => setAuditFromDate(e.target.value)}
+                    className="w-full px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 text-xs focus:ring-2 focus:ring-[#0F4C81] outline-hidden"
+                  />
+                </div>
+
+                {/* To Date */}
+                <div>
+                  <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1">
+                    To Date:
+                  </label>
+                  <input
+                    id="audit-filter-to-date"
+                    type="date"
+                    value={auditToDate}
+                    onChange={e => setAuditToDate(e.target.value)}
+                    className="w-full px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 text-xs focus:ring-2 focus:ring-[#0F4C81] outline-hidden"
+                  />
+                </div>
+
+                {/* User Dropdown */}
+                <div>
+                  <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1">
+                    Operator / User:
+                  </label>
+                  <select
+                    id="audit-filter-user"
+                    value={auditUserFilter}
+                    onChange={e => setAuditUserFilter(e.target.value)}
+                    className="w-full px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 text-xs focus:ring-2 focus:ring-[#0F4C81] outline-hidden cursor-pointer"
+                  >
+                    <option value="">All Users</option>
+                    {users.map(u => (
+                      <option key={u.id} value={u.username}>
+                        @{u.username} ({u.full_name})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Search / Action */}
+                <div>
+                  <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1">
+                    Search Details / Action:
+                  </label>
+                  <div className="flex gap-2">
+                    <input
+                      id="audit-filter-search"
+                      type="text"
+                      placeholder="e.g. TASK_CREATE, login..."
+                      value={auditSearchTerm}
+                      onChange={e => setAuditSearchTerm(e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter') {
+                          loadFilteredAuditLogs();
+                        }
+                      }}
+                      className="flex-1 px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 text-xs focus:ring-2 focus:ring-[#0F4C81] outline-hidden"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => loadFilteredAuditLogs()}
+                      disabled={auditLoading}
+                      className="px-3 py-1.5 rounded-lg bg-[#0F4C81] hover:bg-[#16324F] text-white text-xs font-bold transition-colors cursor-pointer disabled:opacity-50 flex items-center gap-1 shrink-0"
+                    >
+                      <Filter className="w-3.5 h-3.5" />
+                      <span>{auditLoading ? '...' : 'Filter'}</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Audit Logs Table */}
+          <div className="overflow-x-auto max-h-[500px] border-t border-slate-200 dark:border-slate-800">
+            {auditLoading ? (
+              <div className="py-16 text-center text-slate-400 text-xs flex flex-col items-center gap-2">
+                <RefreshCw className="w-5 h-5 animate-spin text-[#0F4C81]" />
+                <span>Filtering audit log events...</span>
+              </div>
+            ) : auditLogs.length === 0 ? (
+              <div className="py-16 text-center text-slate-400 text-xs">
+                No audit log records found for the specified date range and filters.
+              </div>
+            ) : (
+              <table className="w-full text-left text-xs">
+                <thead className="bg-slate-50 dark:bg-slate-800/80 text-slate-500 font-semibold uppercase text-[10px] sticky top-0 border-b border-slate-200 dark:border-slate-700">
+                  <tr>
+                    <th className="py-2.5 px-3">Date &amp; Time</th>
+                    <th className="py-2.5 px-3">User</th>
+                    <th className="py-2.5 px-3">Action</th>
+                    <th className="py-2.5 px-3">Entity</th>
+                    <th className="py-2.5 px-3">Details</th>
+                    <th className="py-2.5 px-3">IP Address</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                  {auditLogs.map(log => (
+                    <tr key={log.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/60 transition-colors">
+                      <td className="py-2 px-3 font-mono text-[11px] text-slate-500 whitespace-nowrap">
+                        {new Date(log.created_at).toLocaleString([], {
+                          year: 'numeric',
+                          month: '2-digit',
+                          day: '2-digit',
+                          hour: '2-digit',
+                          minute: '2-digit',
+                          second: '2-digit'
+                        })}
+                      </td>
+                      <td className="py-2 px-3 font-semibold text-slate-800 dark:text-slate-200 whitespace-nowrap">
+                        @{log.user_name}
+                      </td>
+                      <td className="py-2 px-3 font-mono font-bold text-[10px] text-[#0F4C81] dark:text-blue-300 whitespace-nowrap">
+                        <span className="px-1.5 py-0.5 rounded bg-blue-50 dark:bg-blue-950/60 border border-blue-200 dark:border-blue-900/60">
+                          {log.action}
+                        </span>
+                      </td>
+                      <td className="py-2 px-3 text-slate-500 whitespace-nowrap">
+                        {log.entity_type} {log.entity_id ? `#${log.entity_id}` : ''}
+                      </td>
+                      <td className="py-2 px-3 text-slate-600 dark:text-slate-300 max-w-md break-words">
+                        {log.details}
+                      </td>
+                      <td className="py-2 px-3 font-mono text-[10px] text-slate-400 whitespace-nowrap">
+                        {log.ip_address || '—'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
           </div>
         </div>
       )}
@@ -1638,24 +3299,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             >
               <Download className="w-4 h-4" />
               Download Standalone PHP 8.1+ Package (.ZIP)
-            </button>
-          </div>
-
-          {/* Reset Demonstration Scenario (Section 68 & 69) */}
-          <div className="p-6 rounded-2xl bg-white dark:bg-[#16324F] border border-amber-200 dark:border-amber-800/80 bg-amber-50/20 shadow-xs space-y-3">
-            <h3 className="text-base font-bold text-amber-900 dark:text-amber-200">
-              Reset Demonstration Scenario (Morning &rarr; Mid Shift Handover)
-            </h3>
-            <p className="text-xs text-amber-800 dark:text-amber-300 max-w-xl leading-relaxed">
-              Resets the database to the official demo scenario (Section 68-69): Morning shift creates 5 tasks; Mid shift completes tasks 1, 2, 3, 5 while keeping Task 4 (<code>TASK-000004: Verify backup status</code>) pending to demonstrate the shift closure validation lock.
-            </p>
-            <button
-              id="btn-reset-demo-scenario"
-              onClick={onResetDemo}
-              className="flex items-center gap-2 px-4 py-2 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold shadow-xs transition-colors cursor-pointer"
-            >
-              <RotateCcw className="w-4 h-4" />
-              Reload Demonstration Scenario
             </button>
           </div>
 
@@ -1707,6 +3350,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         </div>
       )}
 
+      {/* TAB: BACKUP & DISASTER RECOVERY */}
+      {subTab === 'backup' && (
+        <BackupRestoreSection
+          currentUser={currentUser}
+          onRefreshAll={onSettingsSaved}
+        />
+      )}
+
       {/* Confirmation Modal for Clearing Operational Data */}
       {clearModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
@@ -1744,7 +3395,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 onChange={e => setClearUsersOption(e.target.checked)}
                 className="w-4 h-4 rounded-sm border-slate-300 text-rose-600 focus:ring-rose-500 cursor-pointer"
               />
-              <span>Remove demo operators and keep only my admin account</span>
+              <span>Reset all other operator accounts and keep only my active admin account</span>
             </label>
 
             <div className="flex items-center justify-end gap-3 pt-2">

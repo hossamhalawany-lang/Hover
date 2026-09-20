@@ -6,7 +6,15 @@ import {
   Handover,
   AuditLog,
   SystemSettings,
-  ReportMetrics
+  ReportMetrics,
+  DailyBriefingResponse,
+  TaskCategory,
+  CurrentHandoverResponse,
+  ShiftNote,
+  BackupTableInfo,
+  BackupPackage,
+  BackupValidationResult,
+  RestoreResult
 } from './types';
 
 const TOKEN_KEY = 'shift_handover_token';
@@ -26,15 +34,25 @@ export function removeStoredToken() {
 async function request<T>(endpoint: string, options: RequestInit = {}, retries = 2): Promise<T> {
   const headers = new Headers(options.headers || {});
   headers.set('Content-Type', 'application/json');
+  headers.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+  headers.set('Pragma', 'no-cache');
 
   const token = getStoredToken();
   if (token) {
     headers.set('Authorization', `Bearer ${token}`);
   }
 
+  // Cache-busting parameter for GET requests to guarantee fresh data
+  let fetchUrl = endpoint;
+  if (!options.method || options.method === 'GET') {
+    const separator = fetchUrl.includes('?') ? '&' : '?';
+    fetchUrl = `${fetchUrl}${separator}_t=${Date.now()}`;
+  }
+
   try {
-    const response = await fetch(endpoint, {
+    const response = await fetch(fetchUrl, {
       ...options,
+      cache: 'no-store',
       headers
     });
 
@@ -82,9 +100,14 @@ export const api = {
     return request('/api/setup/status');
   },
 
-  async getStatus(): Promise<{ initialized: boolean; settings?: any }> {
-    const s = await request<{ installed: boolean; appName: string; teamName: string }>('/api/setup/status');
-    return { initialized: s.installed };
+  async getStatus(): Promise<{ initialized: boolean; settings?: any; appName?: string; teamName?: string }> {
+    const s = await request<{ installed: boolean; appName: string; teamName: string; settings?: any }>('/api/setup/status');
+    return {
+      initialized: s.installed,
+      settings: s.settings || { team_name: s.teamName, app_name: s.appName },
+      appName: s.appName,
+      teamName: s.teamName
+    };
   },
 
   async initSetup(data: any): Promise<{ success: boolean; message: string }> {
@@ -242,6 +265,10 @@ export const api = {
     return request(`/api/tasks/${id}`);
   },
 
+  async getAssignees(): Promise<Array<{ id: number; username: string; fullName: string; role: string }>> {
+    return request('/api/assignees');
+  },
+
   async createTask(data: {
     title: string;
     description?: string;
@@ -250,6 +277,10 @@ export const api = {
     assignedUser?: string;
     targetShift?: string;
     dueDate?: string;
+    isCob?: boolean;
+    cobCount?: number;
+    is_cob?: number | boolean;
+    cob_count?: number | null;
   }): Promise<Task> {
     return request('/api/tasks', {
       method: 'POST',
@@ -272,16 +303,11 @@ export const api = {
   },
 
   // Handover
-  async getCurrentHandover(): Promise<{
-    currentShift: ShiftInfo;
-    latestHandover?: Handover;
-    openTasksCount: number;
-    openTasks: Task[];
-  }> {
+  async getCurrentHandover(): Promise<CurrentHandoverResponse> {
     return request('/api/handover/current');
   },
 
-  async acknowledgeHandover(handoverId?: number): Promise<{ success: boolean; message: string }> {
+  async acknowledgeHandover(handoverId?: number): Promise<{ success: boolean; message: string; isShiftAccepted?: boolean; acceptedBy?: string; acceptedAt?: string }> {
     return request('/api/handover/acknowledge', {
       method: 'POST',
       body: JSON.stringify({ handoverId })
@@ -362,17 +388,91 @@ export const api = {
     });
   },
 
-  async getAuditLogs(params: { user?: string; action?: string; search?: string } = {}): Promise<AuditLog[]> {
+  async getAuditLogs(params: { user?: string; action?: string; search?: string; fromDate?: string; toDate?: string } = {}): Promise<AuditLog[]> {
     const query = new URLSearchParams();
     if (params.user) query.set('user', params.user);
     if (params.action) query.set('action', params.action);
     if (params.search) query.set('search', params.search);
+    if (params.fromDate) query.set('fromDate', params.fromDate);
+    if (params.toDate) query.set('toDate', params.toDate);
     return request(`/api/audit-logs?${query.toString()}`);
   },
 
-  async generateHandoverEmail(handoverId?: number): Promise<{ emailText: string }> {
-    const q = handoverId ? `?handoverId=${handoverId}` : '';
+  getAuditLogsExportTxtUrl(params: { user?: string; action?: string; search?: string; fromDate?: string; toDate?: string } = {}): string {
+    const query = new URLSearchParams();
+    if (params.user) query.set('user', params.user);
+    if (params.action) query.set('action', params.action);
+    if (params.search) query.set('search', params.search);
+    if (params.fromDate) query.set('fromDate', params.fromDate);
+    if (params.toDate) query.set('toDate', params.toDate);
+    const token = getStoredToken();
+    if (token) query.set('token', token);
+    return `/api/audit-logs/export-txt?${query.toString()}`;
+  },
+
+  async downloadAuditLogsTxt(params: { user?: string; action?: string; search?: string; fromDate?: string; toDate?: string } = {}): Promise<void> {
+    const query = new URLSearchParams();
+    if (params.user) query.set('user', params.user);
+    if (params.action) query.set('action', params.action);
+    if (params.search) query.set('search', params.search);
+    if (params.fromDate) query.set('fromDate', params.fromDate);
+    if (params.toDate) query.set('toDate', params.toDate);
+    const token = getStoredToken();
+    if (token) query.set('token', token);
+
+    const headers: Record<string, string> = {};
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+      headers['x-session-token'] = token;
+    }
+
+    const res = await fetch(`/api/audit-logs/export-txt?${query.toString()}`, {
+      method: 'GET',
+      headers
+    });
+
+    if (!res.ok) {
+      let errMessage = `Export failed with status: ${res.statusText || res.status}`;
+      try {
+        const errJson = await res.json();
+        if (errJson?.error) errMessage = errJson.error;
+      } catch {}
+      throw new Error(errMessage);
+    }
+
+    const blob = await res.blob();
+    const downloadUrl = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = downloadUrl;
+    a.download = `audit_logs_${params.fromDate || 'start'}_to_${params.toDate || 'latest'}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    window.URL.revokeObjectURL(downloadUrl);
+  },
+
+  async generateHandoverEmail(handoverId?: number, includeTitles?: boolean): Promise<{ emailText: string }> {
+    const params = new URLSearchParams();
+    if (handoverId) params.set('handoverId', String(handoverId));
+    if (includeTitles) params.set('includeTitles', 'true');
+    const q = params.toString() ? `?${params.toString()}` : '';
     return request(`/api/reports/email${q}`);
+  },
+
+  async getDailyBriefing(params: {
+    startDate?: string;
+    endDate?: string;
+    user?: string;
+    search?: string;
+    mode?: 'yesterday' | 'today' | 'custom';
+  } = {}): Promise<DailyBriefingResponse> {
+    const query = new URLSearchParams();
+    if (params.startDate) query.set('startDate', params.startDate);
+    if (params.endDate) query.set('endDate', params.endDate);
+    if (params.user) query.set('user', params.user);
+    if (params.search) query.set('search', params.search);
+    if (params.mode) query.set('mode', params.mode);
+    return request(`/api/reports/daily-briefing?${query.toString()}`);
   },
 
   // Demo
@@ -393,5 +493,170 @@ export const api = {
 
   async factoryReset(): Promise<{ success: boolean; message: string }> {
     return request('/api/system/factory-reset', { method: 'POST' });
+  },
+
+  // Categories API
+  async getCategories(): Promise<TaskCategory[]> {
+    return request('/api/categories');
+  },
+
+  async createCategory(name: string, color?: string): Promise<TaskCategory> {
+    return request('/api/categories', {
+      method: 'POST',
+      body: JSON.stringify({ name, color })
+    });
+  },
+
+  async deleteCategory(id: number): Promise<{ success: boolean; message: string }> {
+    return request(`/api/categories/${id}`, {
+      method: 'DELETE'
+    });
+  },
+
+  // Shift Sticky Notes API (Operational Shift-Date Scoped)
+  async getShiftNotes(shiftDate?: string): Promise<ShiftNote[]> {
+    const query = shiftDate ? `?shift_date=${encodeURIComponent(shiftDate)}` : '';
+    return request(`/api/shift-notes${query}`);
+  },
+
+  async createShiftNote(data: {
+    title?: string;
+    content: string;
+    color?: string;
+    shift_name?: string;
+    shift_date?: string;
+    pinned?: number;
+  }): Promise<ShiftNote> {
+    return request('/api/shift-notes', {
+      method: 'POST',
+      body: JSON.stringify(data)
+    });
+  },
+
+  async updateShiftNote(
+    id: number,
+    data: {
+      title?: string;
+      content?: string;
+      color?: string;
+      pinned?: number;
+    }
+  ): Promise<ShiftNote> {
+    return request(`/api/shift-notes/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data)
+    });
+  },
+
+  async deleteShiftNote(id: number): Promise<{ success: boolean }> {
+    return request(`/api/shift-notes/${id}`, {
+      method: 'DELETE'
+    });
+  },
+
+  // COB Task Rollover API
+  async cobRollover(
+    taskId: number,
+    data: {
+      completedCount: number;
+      remainingCount: number;
+      nextShift?: string;
+      notes?: string;
+      version?: number;
+    }
+  ): Promise<{ completedTask: Task; newTask: Task }> {
+    return request(`/api/tasks/${taskId}/cob-rollover`, {
+      method: 'POST',
+      body: JSON.stringify(data)
+    });
+  },
+
+  // Backup & Restore API
+  async getBackupTables(): Promise<{ tables: BackupTableInfo[] }> {
+    return request('/api/backup/tables');
+  },
+
+  async exportBackup(options?: {
+    tables?: string[];
+    startDate?: string;
+    endDate?: string;
+    download?: boolean;
+  }): Promise<BackupPackage> {
+    return request('/api/backup/export', {
+      method: 'POST',
+      body: JSON.stringify({
+        ...options,
+        download: false
+      })
+    });
+  },
+
+  async downloadBackupFile(options?: {
+    tables?: string[];
+    startDate?: string;
+    endDate?: string;
+  }): Promise<void> {
+    const token = getStoredToken();
+    const response = await fetch('/api/backup/export', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {})
+      },
+      body: JSON.stringify({
+        ...options,
+        download: true
+      })
+    });
+
+    if (!response.ok) {
+      let errMsg = 'Export failed';
+      try {
+        const errJson = await response.json();
+        errMsg = errJson.error || errMsg;
+      } catch {
+        errMsg = response.statusText || errMsg;
+      }
+      throw new Error(errMsg);
+    }
+
+    const blob = await response.blob();
+    const disposition = response.headers.get('Content-Disposition');
+    let filename = `shift_handover_backup_${new Date().toISOString().slice(0, 10)}.json`;
+    if (disposition && disposition.includes('filename=')) {
+      const match = disposition.match(/filename="?([^";]+)"?/);
+      if (match?.[1]) filename = match[1];
+    }
+
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => {
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+    }, 200);
+  },
+
+  async validateBackup(backupJson: any): Promise<BackupValidationResult> {
+    return request('/api/backup/validate', {
+      method: 'POST',
+      body: JSON.stringify({ backupJson })
+    });
+  },
+
+  async restoreBackup(options: {
+    backupJson: any;
+    mode: 'merge' | 'overwrite';
+    selectedTables?: string[];
+  }): Promise<RestoreResult> {
+    return request('/api/backup/restore', {
+      method: 'POST',
+      body: JSON.stringify(options)
+    });
   }
 };
+
+

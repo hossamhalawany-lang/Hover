@@ -2,9 +2,10 @@ import { db, logAudit } from './db.ts';
 import { hashPassword } from './auth.ts';
 
 export function seedDemoScenario(adminUsername: string = 'admin') {
-  // Clear any existing tasks, task_history, handovers, handover_tasks
+  // Clear any existing tasks, task_history, handovers, handover_tasks, shift_acceptances
   db.exec('DELETE FROM handover_tasks;');
   db.exec('DELETE FROM handovers;');
+  db.exec('DELETE FROM shift_acceptances;');
   db.exec('DELETE FROM task_history;');
   db.exec('DELETE FROM tasks;');
 
@@ -55,6 +56,11 @@ export function seedDemoScenario(adminUsername: string = 'admin') {
     5,
     0
   );
+
+  db.prepare(`
+    INSERT INTO shift_acceptances (shift_name, shift_date, accepted_by, accepted_at, notes)
+    VALUES (?, ?, ?, ?, ?)
+  `).run('Mid', now.toISOString().split('T')[0], 'mohamed', midDate, 'Demo seed Mid shift acceptance');
 
   // Insert the 5 tasks created in Morning and worked by Mid:
   const insertTask = db.prepare(`
@@ -116,5 +122,26 @@ export function seedDemoScenario(adminUsername: string = 'admin') {
   insertHistory.run(5, 'TASK-000005', 'Created', 'ahmed', 'Morning', null, 'Pending', 'Initial Morning shift task creation', morningDate);
   insertHistory.run(5, 'TASK-000005', 'Completed', 'mohamed', 'Mid', 'Pending', 'Completed', 'Gateway responses tested and 100% successful.', midDate);
 
-  logAudit(adminUsername, 'Demo Scenario Loaded', 'SYSTEM', null, 'Loaded required Morning -> Mid forgotten task scenario (TASK-000004 pending)');
+  // Ensure user youssef exists
+  const existingYoussef = db.prepare('SELECT id FROM users WHERE username = ?').get('youssef');
+  if (!existingYoussef) {
+    db.prepare(`
+      INSERT INTO users (username, password_hash, full_name, role, status, created_at, updated_at)
+      VALUES (?, ?, ?, 'USER', 'ACTIVE', ?, ?)
+    `).run('youssef', hashPassword('Youssef@123456'), 'Youssef Ibrahim (Mid Op)', new Date().toISOString(), new Date().toISOString());
+  }
+
+  // Previous Day / 12/09/2026 task explicitly requested by user:
+  // "Task01 Run COB in 4.200 complete by youssef at 6:PM mid shift"
+  const yesterdayCob = '2026-09-12T15:00:00.000Z'; // 6:00 PM Cairo (UTC+3)
+  insertTask.run(
+    6, 'Task01', 'Run COB in 4.200', 'Core Banking Close of Business batch processing, balancing, and ledger sign-off.', 'Critical', 'Completed', 'Operations',
+    'ahmed', '2026-09-12T14:00:00.000Z', 'Mid', 'Mid', 'youssef',
+    '2026-09-12', 'youssef', yesterdayCob, yesterdayCob, 'youssef',
+    'Run COB in 4.200 complete by youssef at 6:00 PM mid shift with zero batch discrepancies.', 1
+  );
+  insertHistory.run(6, 'Task01', 'Created', 'ahmed', 'Mid', null, 'Pending', 'Scheduled COB batch initialization', '2026-09-12T14:00:00.000Z');
+  insertHistory.run(6, 'Task01', 'Completed', 'youssef', 'Mid', 'In Progress', 'Completed', 'Run COB in 4.200 complete by youssef at 6:00 PM mid shift', yesterdayCob);
+
+  logAudit(adminUsername, 'Demo Scenario Loaded', 'SYSTEM', null, 'Loaded required Morning -> Mid forgotten task scenario and 12/09/2026 COB task');
 }

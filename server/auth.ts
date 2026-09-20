@@ -7,7 +7,7 @@ export interface AuthUser {
   username: string;
   full_name: string;
   fullName?: string;
-  role: 'ADMIN' | 'USER';
+  role: 'ADMIN' | 'SUPERVISOR' | 'USER';
   status: 'ACTIVE' | 'DISABLED';
   selectedShift?: 'Morning' | 'Mid' | 'Night' | string;
 }
@@ -126,6 +126,10 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction) 
     token = authHeader.substring(7);
   } else if (req.headers['x-session-token']) {
     token = String(req.headers['x-session-token']);
+  } else if (req.query?.token && typeof req.query.token === 'string') {
+    token = req.query.token;
+  } else if ((req as any).cookies?.session_token) {
+    token = (req as any).cookies.session_token;
   }
 
   if (token) {
@@ -155,6 +159,16 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
 export function requireAdmin(req: Request, res: Response, next: NextFunction) {
   if (!req.user || req.user.role !== 'ADMIN') {
     return res.status(403).json({ error: 'Access denied. Administrator privileges required.' });
+  }
+  next();
+}
+
+/**
+ * Guard middleware: User must have ADMIN or SUPERVISOR role
+ */
+export function requireAdminOrSupervisor(req: Request, res: Response, next: NextFunction) {
+  if (!req.user || (req.user.role !== 'ADMIN' && req.user.role !== 'SUPERVISOR')) {
+    return res.status(403).json({ error: 'Access denied. Administrator or Supervisor privileges required.' });
   }
   next();
 }

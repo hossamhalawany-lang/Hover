@@ -11,11 +11,13 @@ import { TasksView } from './components/TasksView';
 import { HandoverView } from './components/HandoverView';
 import { ReportsView } from './components/ReportsView';
 import { SettingsView } from './components/SettingsView';
+import { DailyBriefingSection } from './components/DailyBriefingSection';
 import { TaskDetailModal } from './components/TaskDetailModal';
 import { HandoverEmailModal } from './components/HandoverEmailModal';
 import { ChangePasswordModal } from './components/ChangePasswordModal';
 import { api } from './api';
 import { User, ShiftInfo, Task, AppSettings, ShiftName } from './types';
+import { Lock, CheckCircle2 } from 'lucide-react';
 
 export default function App() {
   // App system status
@@ -33,25 +35,56 @@ export default function App() {
   const [previousShiftNotes, setPreviousShiftNotes] = useState<string | null>(null);
 
   // Navigation & UI state
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'tasks' | 'handover' | 'reports' | 'settings'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'tasks' | 'handover' | 'reports' | 'settings'>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('hando_active_tab') as any;
+      if (['dashboard', 'tasks', 'handover', 'reports', 'settings'].includes(saved)) {
+        return saved;
+      }
+    }
+    return 'dashboard';
+  });
+
+  const handleSelectTab = (tab: 'dashboard' | 'tasks' | 'handover' | 'reports' | 'settings') => {
+    setActiveTab(tab);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('hando_active_tab', tab);
+    }
+  };
+
   const [selectedTaskId, setSelectedTaskId] = useState<number | null>(null);
   const [emailModalOpen, setEmailModalOpen] = useState(false);
   const [handoverEmailId, setHandoverEmailId] = useState<number | undefined>(undefined);
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
-  const [darkMode, setDarkMode] = useState(false);
+  const [darkMode, setDarkMode] = useState<boolean>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('hando_dark_mode');
+      if (saved !== null) return saved === 'true';
+      return window.matchMedia('(prefers-color-scheme: dark)').matches;
+    }
+    return false;
+  });
 
   // 1. Initial health and session check
   const checkStatusAndSession = useCallback(async () => {
     try {
       const statusRes = await api.getStatus();
       setInitialized(statusRes.initialized);
-      setSettings(statusRes.settings || null);
+      if (statusRes.settings) {
+        setSettings(prev => ({ ...prev, ...statusRes.settings }));
+      }
 
       if (statusRes.initialized) {
         try {
           const authRes = await api.getMe();
           if (authRes && authRes.user) {
             setCurrentUser(authRes.user);
+            try {
+              const fullSettings = await api.getSettings();
+              if (fullSettings) {
+                setSettings(fullSettings);
+              }
+            } catch {}
           } else {
             setCurrentUser(null);
           }
@@ -66,7 +99,9 @@ export default function App() {
         try {
           const retryStatus = await api.getStatus();
           setInitialized(retryStatus.initialized);
-          setSettings(retryStatus.settings || null);
+          if (retryStatus.settings) {
+            setSettings(prev => ({ ...prev, ...retryStatus.settings }));
+          }
         } catch {
           setInitialized(false);
         }
@@ -93,8 +128,10 @@ export default function App() {
   useEffect(() => {
     if (darkMode) {
       document.documentElement.classList.add('dark');
+      localStorage.setItem('hando_dark_mode', 'true');
     } else {
       document.documentElement.classList.remove('dark');
+      localStorage.setItem('hando_dark_mode', 'false');
     }
   }, [darkMode]);
 
@@ -119,11 +156,10 @@ export default function App() {
       }
 
       if (handoverRes) {
+        setHandoverAcknowledged(Boolean(handoverRes.isShiftAccepted));
         if (handoverRes.latestHandover) {
-          setHandoverAcknowledged(!!handoverRes.latestHandover.acknowledged_by);
           setPreviousShiftNotes(handoverRes.latestHandover.general_notes || null);
         } else {
-          setHandoverAcknowledged(true);
           setPreviousShiftNotes(null);
         }
       }
@@ -145,6 +181,32 @@ export default function App() {
     }
   }, [currentUser, refreshOperationalData]);
 
+  // Immediate optimistic state update when a task is updated (e.g. marked Completed or Reopened to Pending)
+  const handleTaskUpdated = useCallback(async (updatedTask?: Task) => {
+    if (updatedTask) {
+      setTasks(prev => {
+        const exists = prev.some(t => t.id === updatedTask.id);
+        const next = exists
+          ? prev.map(t => t.id === updatedTask.id ? { ...t, ...updatedTask } : t)
+          : [updatedTask, ...prev];
+        setUnresolvedCount(next.filter(t => ['Pending', 'In Progress'].includes(t.status)).length);
+        setCriticalCount(next.filter(t => t.priority === 'Critical' && t.status !== 'Completed').length);
+        return next;
+      });
+    }
+    await refreshOperationalData();
+  }, [refreshOperationalData]);
+
+  useEffect(() => {
+    const handleRemoteRefresh = () => {
+      refreshOperationalData();
+    };
+    window.addEventListener('operational:refresh', handleRemoteRefresh);
+    return () => {
+      window.removeEventListener('operational:refresh', handleRemoteRefresh);
+    };
+  }, [refreshOperationalData]);
+
   // Logout handler
   const handleLogout = async () => {
     try {
@@ -153,35 +215,39 @@ export default function App() {
       console.error(err);
     } finally {
       setCurrentUser(null);
+      setActiveTab('handover');
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('hando_active_tab', 'handover');
+      }
     }
   };
 
   // Quick acknowledge handler
   const handleQuickAcknowledge = async () => {
     try {
-      await api.acknowledgeHandover();
       setHandoverAcknowledged(true);
+      await api.acknowledgeHandover();
       await refreshOperationalData();
     } catch (err) {
       console.error(err);
+      await refreshOperationalData();
     }
   };
 
-  // Reset Demo Scenario (Section 68-69)
-  const handleResetDemo = async () => {
+  // Settings saved handler (keeps user on settings page)
+  const handleSettingsSaved = async () => {
     try {
-      await api.resetDemo();
-      await refreshOperationalData();
-      setActiveTab('dashboard');
-    } catch (err) {
-      console.error(err);
-    }
+      const fullSettings = await api.getSettings();
+      if (fullSettings) {
+        setSettings(fullSettings);
+      }
+    } catch {}
+    await checkStatusAndSession();
   };
 
   const handleClearOperationalData = async () => {
     await refreshOperationalData();
     await checkStatusAndSession();
-    setActiveTab('dashboard');
   };
 
   const handleSwitchDutyShift = async (newShift: ShiftName) => {
@@ -231,32 +297,62 @@ export default function App() {
       <LoginModal
         onLoginSuccess={user => {
           setCurrentUser(user);
+          handleSelectTab('handover');
         }}
       />
     );
   }
 
   return (
-    <div className="min-h-screen flex flex-col bg-[#F5F7FA] dark:bg-[#0c1c2e] text-slate-900 dark:text-slate-100 transition-colors">
+    <div className="min-h-screen flex flex-col bg-[#F5F7FA] dark:bg-[#0c1c2e] text-slate-900 dark:text-slate-100 transition-colors max-w-full overflow-x-hidden">
       {/* Top Enterprise Navigation */}
       <Navbar
         currentUser={currentUser}
         shift={shift}
         unresolvedCount={unresolvedCount}
         criticalCount={criticalCount}
-        teamName={settings?.team_name || 'Operations & IT Team'}
+        teamName={settings?.team_name || 'Operations Team'}
         activeTab={activeTab}
-        onSelectTab={setActiveTab}
+        onSelectTab={handleSelectTab}
         onLogout={handleLogout}
-        onLoadDemo={handleResetDemo}
         onChangePassword={() => setChangePasswordOpen(true)}
         darkMode={darkMode}
         onToggleDarkMode={() => setDarkMode(!darkMode)}
         onSwitchShift={handleSwitchDutyShift}
       />
 
+      {/* Global Shift Acceptance Alert Banner */}
+      {!handoverAcknowledged && activeTab !== 'handover' && (
+        <div className="max-w-[1600px] w-full mx-auto px-4 sm:px-6 lg:px-8 pt-4">
+          <div className="p-4 rounded-xl bg-amber-50 dark:bg-amber-950/50 border border-amber-300 dark:border-amber-700 flex flex-col sm:flex-row items-center justify-between gap-3 shadow-xs">
+            <div className="flex items-center gap-3">
+              <div className="p-2 rounded-lg bg-amber-100 dark:bg-amber-900/60 text-amber-700 dark:text-amber-300">
+                <Lock className="w-5 h-5" />
+              </div>
+              <div className="text-xs">
+                <p className="font-bold text-amber-900 dark:text-amber-200">
+                  Shift Handover Pending Acceptance ({shift?.name || 'Active'} Shift)
+                </p>
+                <p className="text-amber-700 dark:text-amber-300 mt-0.5">
+                  Ticket operations (creating, updating status, comments) and shift closure are locked until you officially accept the shift.
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              id="btn-global-accept-shift"
+              onClick={handleQuickAcknowledge}
+              className="flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-xs transition-colors cursor-pointer shrink-0"
+            >
+              <CheckCircle2 className="w-4 h-4" />
+              Accept Shift Now
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Main Content Body */}
-      <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 lg:p-8">
+      <main className="flex-1 max-w-[1600px] w-full mx-auto p-4 sm:p-6 lg:p-8">
         {activeTab === 'dashboard' && (
           <DashboardView
             currentUser={currentUser}
@@ -265,12 +361,20 @@ export default function App() {
             unresolvedCount={unresolvedCount}
             criticalCount={criticalCount}
             onOpenTask={taskId => setSelectedTaskId(taskId)}
-            onNewTask={() => setActiveTab('tasks')}
-            onNavigateTab={tab => setActiveTab(tab as any)}
+            onNewTask={() => handleSelectTab('tasks')}
+            onNavigateTab={tab => handleSelectTab(tab as any)}
             onAcknowledgeHandover={handleQuickAcknowledge}
             handoverAcknowledged={handoverAcknowledged}
             previousShiftNotes={previousShiftNotes}
             onSwitchShift={handleSwitchDutyShift}
+            teamName={settings?.team_name || 'Operations Team'}
+          />
+        )}
+
+        {activeTab === 'briefing' && (
+          <DailyBriefingSection
+            onOpenTask={taskId => setSelectedTaskId(taskId)}
+            defaultMode="yesterday"
           />
         )}
 
@@ -281,6 +385,8 @@ export default function App() {
             currentUser={currentUser}
             onOpenTask={taskId => setSelectedTaskId(taskId)}
             onTaskCreated={refreshOperationalData}
+            handoverAcknowledged={handoverAcknowledged}
+            onAcknowledgeHandover={handleQuickAcknowledge}
           />
         )}
 
@@ -294,6 +400,8 @@ export default function App() {
               setEmailModalOpen(true);
             }}
             onShiftClosed={refreshOperationalData}
+            handoverAcknowledged={handoverAcknowledged}
+            onAcknowledgeHandover={handleQuickAcknowledge}
           />
         )}
 
@@ -302,8 +410,7 @@ export default function App() {
         {activeTab === 'settings' && (
           <SettingsView
             currentUser={currentUser}
-            onSettingsSaved={checkStatusAndSession}
-            onResetDemo={handleResetDemo}
+            onSettingsSaved={handleSettingsSaved}
             onClearData={handleClearOperationalData}
             onFactoryReset={handleFactoryResetDone}
           />
@@ -322,9 +429,12 @@ export default function App() {
       {selectedTaskId !== null && (
         <TaskDetailModal
           taskId={selectedTaskId}
+          shift={shift}
           onClose={() => setSelectedTaskId(null)}
-          onTaskUpdated={refreshOperationalData}
+          onTaskUpdated={handleTaskUpdated}
           currentUser={currentUser}
+          handoverAcknowledged={handoverAcknowledged}
+          onAcknowledgeHandover={handleQuickAcknowledge}
         />
       )}
 

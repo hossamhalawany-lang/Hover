@@ -13,7 +13,6 @@ export const SetupModal: React.FC<SetupModalProps> = ({ onCompleted }) => {
   const [adminPassword, setAdminPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [timezone, setTimezone] = useState('Africa/Cairo');
-  const [loadDemo, setLoadDemo] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -45,7 +44,7 @@ export const SetupModal: React.FC<SetupModalProps> = ({ onCompleted }) => {
         adminPassword,
         confirmPassword,
         timezone,
-        loadDemo
+        loadDemo: false
       });
       onCompleted();
     } catch (err: any) {
@@ -196,21 +195,6 @@ export const SetupModal: React.FC<SetupModalProps> = ({ onCompleted }) => {
                 <option value="America/Los_Angeles">America/Los_Angeles (PST)</option>
               </select>
             </div>
-          </div>
-
-          {/* Demonstration Scenario Checkbox (Section 68 & 69) */}
-          <div className="p-3.5 rounded-lg bg-indigo-50/70 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-800 flex items-start gap-3">
-            <input
-              id="setup-load-demo"
-              type="checkbox"
-              checked={loadDemo}
-              onChange={e => setLoadDemo(e.target.checked)}
-              className="mt-1 w-4 h-4 rounded text-[#0F4C81] focus:ring-[#0F4C81]"
-            />
-            <label htmlFor="setup-load-demo" className="text-xs text-indigo-900 dark:text-indigo-200 cursor-pointer leading-relaxed">
-              <strong className="block font-semibold">Load Demonstration Scenario (Mandatory Acceptance Scenario)</strong>
-              Pre-populates Morning shift with 5 tasks. Sets Mid shift with Tasks 1, 2, 3, 5 completed and Task 4 (<code className="font-mono font-bold">TASK-000004: Verify backup status</code>) pending to demonstrate the shift closure validation lock.
-            </label>
           </div>
 
           <button

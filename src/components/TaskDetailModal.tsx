@@ -14,23 +14,33 @@ import {
   Calendar,
   Layers,
   Send,
-  Lock
+  Lock,
+  Pencil,
+  RotateCw
 } from 'lucide-react';
-import { Task, TaskHistoryItem, User as UserType } from '../types';
+import { Task, TaskHistoryItem, User as UserType, ShiftInfo } from '../types';
 import { api } from '../api';
+import { isCobTask } from '../utils/cobUtils';
+import { CobRolloverModal } from './CobRolloverModal';
 
 interface TaskDetailModalProps {
   taskId: number | null;
+  shift?: ShiftInfo | null;
   onClose: () => void;
-  onTaskUpdated: () => void;
+  onTaskUpdated: (updatedTask?: Task) => void;
   currentUser: UserType;
+  handoverAcknowledged?: boolean;
+  onAcknowledgeHandover?: () => Promise<void>;
 }
 
 export const TaskDetailModal: React.FC<TaskDetailModalProps> = ({
   taskId,
+  shift = null,
   onClose,
   onTaskUpdated,
-  currentUser
+  currentUser,
+  handoverAcknowledged = true,
+  onAcknowledgeHandover
 }) => {
   const [task, setTask] = useState<Task | null>(null);
   const [history, setHistory] = useState<TaskHistoryItem[]>([]);
@@ -42,6 +52,83 @@ export const TaskDetailModal: React.FC<TaskDetailModalProps> = ({
   const [activeAction, setActiveAction] = useState<string | null>(null);
   const [actionNotes, setActionNotes] = useState('');
   const [confirmComplete, setConfirmComplete] = useState(false);
+  const [cobModalOpen, setCobModalOpen] = useState(false);
+  const [cobVerifiedComplete, setCobVerifiedComplete] = useState(false);
+
+  const [acceptingShift, setAcceptingShift] = useState(false);
+
+  // Edit task state
+  const [isEditing, setIsEditing] = useState(false);
+  const [editTitle, setEditTitle] = useState('');
+  const [editDescription, setEditDescription] = useState('');
+  const [editPriority, setEditPriority] = useState('Medium');
+  const [editCategory, setEditCategory] = useState('Monitoring');
+  const [editAssignedUser, setEditAssignedUser] = useState('');
+  const [editDueDate, setEditDueDate] = useState('');
+  const [editIsCob, setEditIsCob] = useState(false);
+  const [editCobCount, setEditCobCount] = useState<number | string>(1);
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [usersList, setUsersList] = useState<UserType[]>([]);
+
+  useEffect(() => {
+    api.getUsers().then(res => setUsersList(Array.isArray(res) ? res : [])).catch(() => {});
+  }, []);
+
+  const handleStartEditing = () => {
+    if (!task) return;
+    setEditTitle(task.title || '');
+    setEditDescription(task.description || '');
+    setEditPriority(task.priority || 'Medium');
+    setEditCategory(task.category || 'Monitoring');
+    setEditAssignedUser(task.assigned_user || '');
+    setEditDueDate(task.due_date ? task.due_date.slice(0, 16) : '');
+    setEditIsCob(Boolean(task.is_cob));
+    setEditCobCount(task.cob_count && task.cob_count > 0 ? task.cob_count : 1);
+    setIsEditing(true);
+  };
+
+  const handleCancelEditing = () => {
+    setIsEditing(false);
+  };
+
+  const handleSaveEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!task) return;
+    if (!editTitle.trim()) {
+      setError('Task title is required.');
+      return;
+    }
+    if (editIsCob && (!editCobCount || Number(editCobCount) < 1)) {
+      setError('Please specify a valid Number of COBs (at least 1).');
+      return;
+    }
+
+    setSavingEdit(true);
+    setError(null);
+    try {
+      const updated = await api.updateTask(task.id, {
+        title: editTitle.trim(),
+        description: editDescription.trim() || null,
+        priority: editPriority,
+        category: editCategory,
+        assignedUser: editAssignedUser.trim() || null,
+        dueDate: editDueDate || null,
+        version: task.version,
+        is_cob: editIsCob ? 1 : 0,
+        cob_count: editIsCob ? Math.max(1, parseInt(String(editCobCount), 10) || 1) : null
+      });
+      setTask(updated);
+      setIsEditing(false);
+      onTaskUpdated(updated);
+      await loadTaskDetails();
+    } catch (err: any) {
+      setError(err.message || 'Failed to update task.');
+    } finally {
+      setSavingEdit(false);
+    }
+  };
+
+
 
   useEffect(() => {
     if (!taskId) return;
@@ -63,9 +150,43 @@ export const TaskDetailModal: React.FC<TaskDetailModalProps> = ({
     }
   };
 
-  const handleExecuteAction = async (action: string) => {
+  const handleAcceptShiftInModal = async () => {
+    setAcceptingShift(true);
+    setError(null);
+    try {
+      if (task) {
+        setTask({ ...task, isHandoverLocked: false });
+      }
+      if (onAcknowledgeHandover) {
+        await onAcknowledgeHandover();
+      } else {
+        await api.acknowledgeHandover();
+      }
+      await loadTaskDetails();
+      onTaskUpdated();
+    } catch (err: any) {
+      setError(err.message || 'Failed to accept shift.');
+      await loadTaskDetails();
+    } finally {
+      setAcceptingShift(false);
+    }
+  };
+
+  const handleExecuteAction = async (action: string, overrideConfirm = false) => {
     if (!task) return;
     setError(null);
+
+    const isLocked = Boolean(task.isHandoverLocked || !handoverAcknowledged);
+    if (isLocked) {
+      setError('Ticket is locked: You must accept the shift before interacting with tickets.');
+      return;
+    }
+
+    // COB Task validation check
+    if (action === 'COMPLETE' && isCobTask(task) && !cobVerifiedComplete && !overrideConfirm) {
+      setCobModalOpen(true);
+      return;
+    }
 
     // Validation
     if (['BLOCK', 'CANCEL', 'CARRY_OVER', 'REOPEN', 'ADD_NOTE'].includes(action) && !actionNotes.trim()) {
@@ -73,7 +194,7 @@ export const TaskDetailModal: React.FC<TaskDetailModalProps> = ({
       return;
     }
 
-    if (action === 'COMPLETE' && !confirmComplete) {
+    if (action === 'COMPLETE' && !confirmComplete && !overrideConfirm) {
       setError('Please explicitly confirm task completion.');
       return;
     }
@@ -81,17 +202,42 @@ export const TaskDetailModal: React.FC<TaskDetailModalProps> = ({
     setActionLoading(true);
     try {
       // Pass task.version for Optimistic Concurrency Check (Section 36)
-      await api.updateTaskStatus(task.id, action, actionNotes, task.version);
+      const updated = await api.updateTaskStatus(task.id, action, actionNotes, task.version);
       setActiveAction(null);
       setActionNotes('');
       setConfirmComplete(false);
+      setCobVerifiedComplete(false);
+      if (updated) {
+        setTask(updated);
+      }
       await loadTaskDetails();
-      onTaskUpdated();
+      onTaskUpdated(updated);
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('task:updated', { detail: updated }));
+      }
     } catch (err: any) {
       setError(err.message || 'Action failed.');
     } finally {
       setActionLoading(false);
     }
+  };
+
+  const handleCobConfirmCompleted = async () => {
+    setCobVerifiedComplete(true);
+    setConfirmComplete(true);
+    setCobModalOpen(false);
+    // Directly complete the task with verified COBs completion
+    await handleExecuteAction('COMPLETE', true);
+  };
+
+  const handleCobRolloverSuccess = (completedTask: Task, newTask: Task) => {
+    setTask(completedTask);
+    onTaskUpdated(completedTask);
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('task:updated', { detail: completedTask }));
+      window.dispatchEvent(new CustomEvent('task:created', { detail: newTask }));
+    }
+    loadTaskDetails();
   };
 
   if (!taskId) return null;
@@ -108,6 +254,17 @@ export const TaskDetailModal: React.FC<TaskDetailModalProps> = ({
             <div className="text-xs text-slate-500 dark:text-slate-400">
               Revision / Version: <span className="font-semibold text-slate-700 dark:text-slate-200">v{task?.version || 1}</span>
             </div>
+            {task && !isEditing && task.status !== 'Completed' && task.status !== 'Cancelled' && (
+              <button
+                type="button"
+                id="edit-task-button"
+                onClick={handleStartEditing}
+                className="px-2.5 py-1 rounded-md text-xs font-semibold bg-slate-200 hover:bg-slate-300 dark:bg-slate-700 dark:hover:bg-slate-600 text-slate-800 dark:text-slate-200 flex items-center gap-1.5 transition-colors cursor-pointer"
+              >
+                <Pencil className="w-3 h-3 text-slate-600 dark:text-slate-300" />
+                Edit Task
+              </button>
+            )}
           </div>
           <button
             onClick={onClose}
@@ -182,11 +339,26 @@ export const TaskDetailModal: React.FC<TaskDetailModalProps> = ({
                     {task.category}
                   </span>
 
+                  {/* COB Execution Task Badge */}
+                  {task.is_cob ? (
+                    <span className="text-xs px-2.5 py-0.5 rounded-full bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-200 font-bold border border-amber-300 dark:border-amber-800 flex items-center gap-1.5 font-mono">
+                      <RotateCw className="w-3 h-3 text-amber-600" />
+                      COB Execution Task ({task.cob_count || 1} COBs)
+                    </span>
+                  ) : null}
+
                   {/* Handover State (Section 17) */}
                   {task.handover_state !== 'None' && (
                     <span className="text-xs px-2 py-0.5 rounded bg-purple-50 dark:bg-purple-950/40 text-purple-700 dark:text-purple-300 border border-purple-200 dark:border-purple-800 flex items-center gap-1 font-medium">
                       <ArrowRightLeft className="w-3 h-3" />
                       Handover: {task.handover_state}
+                    </span>
+                  )}
+
+                  {task.isHandoverLocked && (
+                    <span className="text-xs px-2 py-0.5 rounded bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 font-bold border border-amber-300 dark:border-amber-800 flex items-center gap-1">
+                      <Lock className="w-3 h-3" />
+                      Handover Lock Active
                     </span>
                   )}
 
@@ -197,13 +369,191 @@ export const TaskDetailModal: React.FC<TaskDetailModalProps> = ({
                   )}
                 </div>
 
-                <h2 className="text-xl font-bold text-slate-900 dark:text-white">
-                  {task.title}
-                </h2>
-                {task.description && (
-                  <p className="mt-2 text-sm text-slate-600 dark:text-slate-300 whitespace-pre-line leading-relaxed">
-                    {task.description}
-                  </p>
+                {isEditing ? (
+                  <form onSubmit={handleSaveEdit} className="p-4 rounded-xl border border-blue-200 dark:border-blue-900 bg-blue-50/30 dark:bg-blue-950/20 space-y-4">
+                    <div className="flex items-center justify-between pb-2 border-b border-blue-200 dark:border-blue-900/60">
+                      <span className="font-bold text-sm text-blue-900 dark:text-blue-200 flex items-center gap-1.5">
+                        <Pencil className="w-4 h-4 text-blue-600" />
+                        Edit Task Details
+                      </span>
+                      <button
+                        type="button"
+                        onClick={handleCancelEditing}
+                        className="text-xs font-semibold text-slate-500 hover:text-slate-700 cursor-pointer"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+
+                    <div className="space-y-3">
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                          Task Title *
+                        </label>
+                        <input
+                          type="text"
+                          required
+                          value={editTitle}
+                          onChange={e => setEditTitle(e.target.value)}
+                          className="w-full px-3 py-2 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-medium"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                          Description (Optional)
+                        </label>
+                        <textarea
+                          value={editDescription}
+                          onChange={e => setEditDescription(e.target.value)}
+                          rows={3}
+                          className="w-full px-3 py-2 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
+                        />
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                          <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                            Priority
+                          </label>
+                          <select
+                            value={editPriority}
+                            onChange={e => setEditPriority(e.target.value)}
+                            className="w-full px-3 py-2 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
+                          >
+                            <option value="Critical">Critical</option>
+                            <option value="High">High</option>
+                            <option value="Medium">Medium</option>
+                            <option value="Low">Low</option>
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                            Category
+                          </label>
+                          <select
+                            value={editCategory}
+                            onChange={e => setEditCategory(e.target.value)}
+                            className="w-full px-3 py-2 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
+                          >
+                            <option value="Monitoring">Monitoring</option>
+                            <option value="Incident">Incident</option>
+                            <option value="Deployment">Deployment</option>
+                            <option value="Maintenance">Maintenance</option>
+                            <option value="Health Check">Health Check</option>
+                            <option value="Operations">Operations</option>
+                            <option value="Other">Other</option>
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                            Assigned User
+                          </label>
+                          <select
+                            value={editAssignedUser}
+                            onChange={e => setEditAssignedUser(e.target.value)}
+                            className="w-full px-3 py-2 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
+                          >
+                            <option value="">-- Unassigned (Shift-wide) --</option>
+                            {usersList.map(u => (
+                              <option key={u.id} value={u.username}>
+                                {u.fullName && u.fullName !== u.username ? `${u.fullName} (@${u.username})` : `@${u.username}`}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                            Due Date / Time
+                          </label>
+                          <input
+                            type="datetime-local"
+                            value={editDueDate}
+                            onChange={e => setEditDueDate(e.target.value)}
+                            className="w-full px-3 py-2 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
+                          />
+                        </div>
+                      </div>
+
+                      {/* COB Execution Task Explicit Toggle & Mandatory Count */}
+                      <div className="rounded-xl border border-amber-200 dark:border-amber-800/80 bg-amber-50/50 dark:bg-amber-950/20 p-3.5 space-y-3">
+                        <div className="flex items-center justify-between">
+                          <label className="flex items-center gap-2 cursor-pointer select-none">
+                            <input
+                              type="checkbox"
+                              id="edit-task-is-cob"
+                              checked={editIsCob}
+                              onChange={e => setEditIsCob(e.target.checked)}
+                              className="w-4 h-4 rounded text-amber-600 focus:ring-amber-500 border-slate-300 dark:border-slate-600 cursor-pointer"
+                            />
+                            <div>
+                              <span className="text-xs font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
+                                <RotateCw className="w-3.5 h-3.5 text-amber-600" />
+                                COB Execution Task
+                              </span>
+                              <span className="text-[11px] text-slate-500 dark:text-slate-400 block font-normal">
+                                Explicitly designate as a Close of Business batch task
+                              </span>
+                            </div>
+                          </label>
+                        </div>
+
+                        {editIsCob && (
+                          <div className="pt-2 border-t border-amber-200/60 dark:border-amber-800/50 flex flex-col sm:flex-row sm:items-center gap-3">
+                            <div className="flex-1">
+                              <label htmlFor="edit-task-cob-count" className="block text-xs font-bold text-amber-900 dark:text-amber-200 mb-1">
+                                Number of COBs *
+                              </label>
+                              <input
+                                type="number"
+                                id="edit-task-cob-count"
+                                min="1"
+                                required
+                                value={editCobCount}
+                                onChange={e => setEditCobCount(Math.max(1, parseInt(e.target.value, 10) || 1))}
+                                placeholder="e.g. 1, 2, 3..."
+                                className="w-full sm:w-40 px-3 py-2 text-xs rounded-lg border border-amber-300 dark:border-amber-700 bg-white dark:bg-slate-800 text-amber-900 dark:text-amber-200 font-mono font-bold"
+                              />
+                            </div>
+                            <p className="text-[11px] text-amber-800 dark:text-amber-300 max-w-xs">
+                              Mandatory: Total number of COBs scheduled. Task closure validation will strictly ask about this number.
+                            </p>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="pt-2 flex items-center justify-end gap-2 border-t border-blue-200 dark:border-blue-900/60">
+                      <button
+                        type="button"
+                        onClick={handleCancelEditing}
+                        className="px-3.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="submit"
+                        disabled={savingEdit}
+                        className="px-4 py-1.5 rounded-lg bg-[#0F4C81] hover:bg-[#16324F] text-white text-xs font-bold transition-colors disabled:opacity-50 cursor-pointer"
+                      >
+                        {savingEdit ? 'Saving...' : 'Save Changes'}
+                      </button>
+                    </div>
+                  </form>
+                ) : (
+                  <>
+                    <h2 className="text-xl font-bold text-slate-900 dark:text-white">
+                      {task.title}
+                    </h2>
+                    {task.description && (
+                      <p className="mt-2 text-sm text-slate-600 dark:text-slate-300 whitespace-pre-line leading-relaxed">
+                        {task.description}
+                      </p>
+                    )}
+                  </>
                 )}
               </div>
 
@@ -366,112 +716,136 @@ export const TaskDetailModal: React.FC<TaskDetailModalProps> = ({
               {/* Action Buttons Bar */}
               {!activeAction && (
                 <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-200 dark:border-slate-800">
-                  {task.status === 'Pending' && (
-                    <button
-                      onClick={() => handleExecuteAction('START')}
-                      disabled={actionLoading}
-                      className="px-3 py-1.5 rounded-lg bg-blue-600 text-white text-xs font-semibold hover:bg-blue-700 transition-colors"
-                    >
-                      Start Working
-                    </button>
-                  )}
-
-                  {['Pending', 'In Progress'].includes(task.status) && (
-                    <>
+                  {(task.isHandoverLocked || !handoverAcknowledged) ? (
+                    <div className="w-full p-3.5 rounded-xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 text-xs text-amber-800 dark:text-amber-300 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <span className="flex items-center gap-2 font-semibold">
+                        <Lock className="w-4 h-4 text-amber-600 shrink-0" />
+                        Ticket interactions locked: Shift acceptance required
+                      </span>
                       <button
-                        onClick={() => {
-                          setActiveAction('COMPLETE');
-                          setConfirmComplete(false);
-                          setActionNotes('');
-                        }}
-                        className="px-3 py-1.5 rounded-lg bg-emerald-600 text-white text-xs font-semibold hover:bg-emerald-700 transition-colors flex items-center gap-1.5"
+                        type="button"
+                        onClick={handleAcceptShiftInModal}
+                        disabled={acceptingShift}
+                        className="px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shrink-0 flex items-center gap-1.5 cursor-pointer shadow-xs transition-colors disabled:opacity-50"
                       >
                         <CheckCircle2 className="w-3.5 h-3.5" />
-                        Mark Completed
+                        {acceptingShift ? 'Accepting...' : 'Accept Shift Now'}
                       </button>
-
-                      <button
-                        onClick={() => {
-                          setActiveAction('CARRY_OVER');
-                          setActionNotes('');
-                        }}
-                        className="px-3 py-1.5 rounded-lg bg-purple-600 text-white text-xs font-semibold hover:bg-purple-700 transition-colors flex items-center gap-1.5"
-                      >
-                        <ArrowRightLeft className="w-3.5 h-3.5" />
-                        Carry Over to Next Shift
-                      </button>
-
-                      <button
-                        onClick={() => {
-                          setActiveAction('BLOCK');
-                          setActionNotes('');
-                        }}
-                        className="px-3 py-1.5 rounded-lg bg-amber-600 text-white text-xs font-semibold hover:bg-amber-700 transition-colors flex items-center gap-1.5"
-                      >
-                        <AlertTriangle className="w-3.5 h-3.5" />
-                        Mark Blocked
-                      </button>
-                    </>
-                  )}
-
-                  {task.status === 'Blocked' && (
+                    </div>
+                  ) : (
                     <>
-                      <button
-                        onClick={() => handleExecuteAction('START')}
-                        className="px-3 py-1.5 rounded-lg bg-blue-600 text-white text-xs font-semibold hover:bg-blue-700 transition-colors"
-                      >
-                        Unblock / Resume Work
-                      </button>
+                      {task.status === 'Pending' && (
+                        <button
+                          onClick={() => handleExecuteAction('START')}
+                          disabled={actionLoading}
+                          className="px-3 py-1.5 rounded-lg bg-blue-600 text-white text-xs font-semibold hover:bg-blue-700 transition-colors cursor-pointer"
+                        >
+                          Start Working
+                        </button>
+                      )}
+
+                      {['Pending', 'In Progress'].includes(task.status) && (
+                        <>
+                          <button
+                            onClick={() => {
+                              if (isCobTask(task)) {
+                                setCobModalOpen(true);
+                              } else {
+                                setActiveAction('COMPLETE');
+                                setConfirmComplete(false);
+                                setActionNotes('');
+                              }
+                            }}
+                            className="px-3 py-1.5 rounded-lg bg-emerald-600 text-white text-xs font-semibold hover:bg-emerald-700 transition-colors flex items-center gap-1.5 cursor-pointer"
+                          >
+                            <CheckCircle2 className="w-3.5 h-3.5" />
+                            Mark Completed
+                          </button>
+
+                          <button
+                            onClick={() => {
+                              setActiveAction('CARRY_OVER');
+                              setActionNotes('');
+                            }}
+                            className="px-3 py-1.5 rounded-lg bg-purple-600 text-white text-xs font-semibold hover:bg-purple-700 transition-colors flex items-center gap-1.5 cursor-pointer"
+                          >
+                            <ArrowRightLeft className="w-3.5 h-3.5" />
+                            Carry Over to Next Shift
+                          </button>
+
+                          <button
+                            onClick={() => {
+                              setActiveAction('BLOCK');
+                              setActionNotes('');
+                            }}
+                            className="px-3 py-1.5 rounded-lg bg-amber-600 text-white text-xs font-semibold hover:bg-amber-700 transition-colors flex items-center gap-1.5 cursor-pointer"
+                          >
+                            <AlertTriangle className="w-3.5 h-3.5" />
+                            Mark Blocked
+                          </button>
+                        </>
+                      )}
+
+                      {task.status === 'Blocked' && (
+                        <>
+                          <button
+                            onClick={() => handleExecuteAction('START')}
+                            className="px-3 py-1.5 rounded-lg bg-blue-600 text-white text-xs font-semibold hover:bg-blue-700 transition-colors cursor-pointer"
+                          >
+                            Unblock / Resume Work
+                          </button>
+                          <button
+                            onClick={() => {
+                              setActiveAction('CARRY_OVER');
+                              setActionNotes('');
+                            }}
+                            className="px-3 py-1.5 rounded-lg bg-purple-600 text-white text-xs font-semibold hover:bg-purple-700 transition-colors flex items-center gap-1.5 cursor-pointer"
+                          >
+                            <ArrowRightLeft className="w-3.5 h-3.5" />
+                            Carry Over
+                          </button>
+                        </>
+                      )}
+
+                      {['Completed', 'Cancelled'].includes(task.status) && (
+                        <button
+                          onClick={() => {
+                            setActiveAction('REOPEN');
+                            setActionNotes('');
+                          }}
+                          className="px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-xs font-semibold hover:bg-indigo-700 transition-colors flex items-center gap-1.5 cursor-pointer"
+                        >
+                          <RotateCcw className="w-3.5 h-3.5" />
+                          Reopen Task
+                        </button>
+                      )}
+
                       <button
                         onClick={() => {
-                          setActiveAction('CARRY_OVER');
+                          setActiveAction('ADD_NOTE');
                           setActionNotes('');
                         }}
-                        className="px-3 py-1.5 rounded-lg bg-purple-600 text-white text-xs font-semibold hover:bg-purple-700 transition-colors flex items-center gap-1.5"
+                        className="px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 text-xs font-semibold hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors flex items-center gap-1.5"
                       >
-                        <ArrowRightLeft className="w-3.5 h-3.5" />
-                        Carry Over
+                        <MessageSquare className="w-3.5 h-3.5" />
+                        Add Note
                       </button>
+
+                      {(currentUser?.role === 'ADMIN' || currentUser?.username === task.created_by) &&
+                        !['Completed', 'Cancelled'].includes(task.status) && (
+                          <button
+                            onClick={() => {
+                              setActiveAction('CANCEL');
+                              setActionNotes('');
+                            }}
+                            className="px-3 py-1.5 rounded-lg text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 text-xs font-semibold transition-colors flex items-center gap-1.5 ml-auto"
+                          >
+                            <Ban className="w-3.5 h-3.5" />
+                            Cancel Task
+                          </button>
+                        )}
                     </>
                   )}
-
-                  {['Completed', 'Cancelled'].includes(task.status) && (
-                    <button
-                      onClick={() => {
-                        setActiveAction('REOPEN');
-                        setActionNotes('');
-                      }}
-                      className="px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-xs font-semibold hover:bg-indigo-700 transition-colors flex items-center gap-1.5"
-                    >
-                      <RotateCcw className="w-3.5 h-3.5" />
-                      Reopen Task
-                    </button>
-                  )}
-
-                  <button
-                    onClick={() => {
-                      setActiveAction('ADD_NOTE');
-                      setActionNotes('');
-                    }}
-                    className="px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 text-xs font-semibold hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors flex items-center gap-1.5"
-                  >
-                    <MessageSquare className="w-3.5 h-3.5" />
-                    Add Note
-                  </button>
-
-                  {(currentUser?.role === 'ADMIN' || currentUser?.username === task.created_by) &&
-                    !['Completed', 'Cancelled'].includes(task.status) && (
-                      <button
-                        onClick={() => {
-                          setActiveAction('CANCEL');
-                          setActionNotes('');
-                        }}
-                        className="px-3 py-1.5 rounded-lg text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 text-xs font-semibold transition-colors flex items-center gap-1.5 ml-auto"
-                      >
-                        <Ban className="w-3.5 h-3.5" />
-                        Cancel Task
-                      </button>
-                    )}
                 </div>
               )}
 
@@ -517,6 +891,19 @@ export const TaskDetailModal: React.FC<TaskDetailModalProps> = ({
           ) : null}
         </div>
       </div>
+
+      {/* COB Task Validation & Rollover Modal */}
+      {task && (
+        <CobRolloverModal
+          task={task}
+          shift={shift}
+          isOpen={cobModalOpen}
+          onClose={() => setCobModalOpen(false)}
+          onConfirmCompleted={handleCobConfirmCompleted}
+          onRolloverSuccess={handleCobRolloverSuccess}
+        />
+      )}
     </div>
   );
 };
+

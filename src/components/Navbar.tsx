@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Clock,
   AlertTriangle,
@@ -14,9 +14,13 @@ import {
   Flame,
   Moon,
   Sun,
-  Sparkles
+  Info,
+  Sparkles,
+  PhoneForwarded,
+  Sliders
 } from 'lucide-react';
 import { User, ShiftInfo } from '../types';
+import { AboutModal } from './AboutModal';
 
 export interface NavbarProps {
   currentUser?: User | null;
@@ -30,12 +34,26 @@ export interface NavbarProps {
   teamName?: string;
   onLogout: () => void;
   onChangePassword?: () => void;
-  onLoadDemo?: () => void;
   darkMode: boolean;
   onToggleDarkMode?: () => void;
   setDarkMode?: (val: boolean) => void;
   onSwitchShift?: (shiftName: any) => void;
 }
+
+const formatCompactName = (fullName?: string, username?: string): string => {
+  const raw = (fullName && fullName.trim()) ? fullName.trim() : (username || 'Operator');
+  const parts = raw.split(/\s+/);
+  let formatted = '';
+  if (parts.length > 1) {
+    formatted = `${parts[0]} ${parts[1].charAt(0).toUpperCase()}.`;
+  } else {
+    formatted = parts[0];
+  }
+  if (formatted.length > 11) {
+    return formatted.slice(0, 10) + '…';
+  }
+  return formatted;
+};
 
 export const Navbar: React.FC<NavbarProps> = ({
   currentUser,
@@ -49,17 +67,61 @@ export const Navbar: React.FC<NavbarProps> = ({
   teamName,
   onLogout,
   onChangePassword,
-  onLoadDemo,
   darkMode,
   onToggleDarkMode,
   setDarkMode: propSetDarkMode,
   onSwitchShift
 }) => {
   const [userMenuOpen, setUserMenuOpen] = useState(false);
-  const [shiftMenuOpen, setShiftMenuOpen] = useState(false);
+  const [aboutModalOpen, setAboutModalOpen] = useState(false);
+  const userMenuRef = useRef<HTMLDivElement>(null);
   const user = currentUser || propUser;
 
+  // Close user dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (userMenuRef.current && !userMenuRef.current.contains(event.target as Node)) {
+        setUserMenuOpen(false);
+      }
+    };
+    if (userMenuOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [userMenuOpen]);
+
   const activeDutyShift = user?.selectedShift || shift?.userShift || shift?.name || 'Morning';
+
+  // Real-time ticking countdown state for timeRemainingSeconds
+  const [secondsRemaining, setSecondsRemaining] = useState<number>(() => shift?.timeRemainingSeconds ?? 0);
+
+  // Sync with shift updates from server
+  useEffect(() => {
+    if (shift) {
+      setSecondsRemaining(shift.timeRemainingSeconds);
+    }
+  }, [shift?.timeRemainingSeconds, shift?.name]);
+
+  // Decrement seconds every 1000ms actively
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setSecondsRemaining(prev => Math.max(0, prev - 1));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // Format the ticking seconds remaining into HH:MM:SS
+  const formatSeconds = (totalSecs: number) => {
+    const h = Math.floor(totalSecs / 3600);
+    const m = Math.floor((totalSecs % 3600) / 60);
+    const s = totalSecs % 60;
+    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+  };
+
+  const displayTimeRemaining = formatSeconds(secondsRemaining);
+  const isApproachingEnd = secondsRemaining > 0 && secondsRemaining <= 30 * 60;
 
   const handleSelectTab = (tab: any) => {
     if (onSelectTab) {
@@ -98,6 +160,12 @@ export const Navbar: React.FC<NavbarProps> = ({
           pill: 'bg-purple-50 text-purple-950 border-purple-300 dark:bg-purple-950/60 dark:text-purple-200 dark:border-purple-700',
           dot: 'bg-purple-300'
         };
+      case '24H On-Call':
+        return {
+          badge: 'bg-emerald-600 text-white shadow-xs border border-emerald-500',
+          pill: 'bg-emerald-50 text-emerald-950 border-emerald-300 dark:bg-emerald-950/60 dark:text-emerald-200 dark:border-emerald-700',
+          dot: 'bg-emerald-400'
+        };
       default:
         return {
           badge: 'bg-slate-700 text-white border border-slate-600',
@@ -110,29 +178,26 @@ export const Navbar: React.FC<NavbarProps> = ({
   const currentStyles = getShiftBadgeStyle(activeDutyShift);
 
   return (
-    <header className="bg-white dark:bg-[#16324F] border-b border-slate-200 dark:border-slate-800 sticky top-0 z-30 shadow-xs">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="flex items-center justify-between h-16">
+    <header className="bg-white dark:bg-[#16324F] border-b border-slate-200 dark:border-slate-800 sticky top-0 z-40 shadow-xs select-none max-w-full overflow-x-clip">
+      <div className="w-full max-w-full px-3 sm:px-4 lg:px-6">
+        <div className="flex items-center justify-between h-16 gap-2 xl:gap-3 max-w-full">
           {/* Brand Logo & Title */}
-          <div className="flex items-center gap-6">
+          <div className="flex items-center gap-2 sm:gap-3 shrink-0 min-w-0">
             <div
               id="brand-logo"
               onClick={() => handleSelectTab('dashboard')}
-              className="flex items-center gap-3 cursor-pointer group"
+              className="flex items-center gap-2 cursor-pointer group shrink-0"
             >
-              <div className="w-10 h-10 rounded-lg bg-[#0F4C81] text-white flex items-center justify-center font-bold shadow-sm transition-transform group-hover:scale-105">
-                <ArrowRightLeft className="w-5 h-5" />
+              <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-lg bg-[#0F4C81] text-white flex items-center justify-center font-bold shadow-sm transition-transform group-hover:scale-105 shrink-0">
+                <ArrowRightLeft className="w-5 h-5 shrink-0" />
               </div>
-              <div>
-                <div className="flex items-center gap-2">
-                  <span className="font-bold text-xl text-slate-900 dark:text-white tracking-tight">
+              <div className="shrink-0">
+                <div className="flex items-center gap-1.5">
+                  <span className="font-bold text-lg sm:text-xl text-slate-900 dark:text-white tracking-tight">
                     Hando
                   </span>
-                  <span className="text-[10px] uppercase font-semibold px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700">
-                    SSOT v1.0
-                  </span>
                 </div>
-                <p className="text-xs text-slate-500 dark:text-slate-400 hidden sm:block">
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 hidden 2xl:block font-medium truncate max-w-[140px]">
                   {teamName || 'Zero Forgotten Tasks'}
                 </p>
               </div>
@@ -140,31 +205,37 @@ export const Navbar: React.FC<NavbarProps> = ({
 
             {/* Shift Indicator & Switcher */}
             {shift && (
-              <div className="relative">
+              <div className="relative shrink-0">
                 <div
                   id="shift-indicator-pill"
-                  onClick={() => setShiftMenuOpen(!shiftMenuOpen)}
-                  className={`hidden sm:flex items-center gap-2.5 px-3 py-1.5 rounded-xl border transition-all cursor-pointer select-none ${currentStyles.pill} hover:shadow-xs`}
-                  title="Click to view or switch operating duty shift"
+                  className={`hidden sm:flex items-center gap-1.5 lg:gap-2 px-2.5 py-1 sm:py-1.5 rounded-xl border transition-all select-none ${currentStyles.pill} shadow-xs shrink-0 whitespace-nowrap`}
+                  title={shift.isOnCallDay ? `Full-Day On-Call Duty (${shift.dayName}): ${shift.onCallReason || 'Weekend/Holiday Single-Person Coverage'}` : `Operating Duty Shift: ${activeDutyShift} Shift (Assigned at Login)`}
                 >
-                  <div className={`px-2 py-0.5 rounded-md text-[11px] font-black uppercase tracking-wider ${currentStyles.badge}`}>
+                  <div className={`px-2 py-0.5 rounded-md text-[10px] sm:text-[11px] font-black uppercase tracking-wider ${currentStyles.badge} shrink-0`}>
                     {activeDutyShift} SHIFT
                   </div>
 
-                  <div className="flex items-center gap-1.5 text-xs font-medium">
-                    <Clock className="w-3.5 h-3.5 opacity-70" />
+                  {shift.isOnCallDay && (
+                    <span className="flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-emerald-600 text-white tracking-wide uppercase shadow-xs shrink-0 whitespace-nowrap">
+                      <PhoneForwarded className="w-3 h-3 shrink-0" />
+                      <span className="hidden 2xl:inline">On-Call 24H</span>
+                    </span>
+                  )}
+
+                  <div className="hidden 2xl:flex items-center gap-1.5 text-xs font-medium shrink-0 whitespace-nowrap">
+                    <Clock className="w-3.5 h-3.5 opacity-70 shrink-0" />
                     <span className="font-mono">{shift.startTime} &rarr; {shift.endTime}</span>
                   </div>
 
-                  <div className="h-3 w-px bg-current opacity-20" />
+                  <div className="hidden 2xl:block h-3 w-px bg-current opacity-20 shrink-0" />
 
-                  <span className="text-[11px] font-mono opacity-80">
-                    {shift.timeRemainingFormatted} left
+                  <span className="text-[10px] sm:text-[11px] font-mono opacity-80 shrink-0 whitespace-nowrap">
+                    {displayTimeRemaining} left
                   </span>
 
-                  {shift.approachingEnd && (
-                    <span className="flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-amber-500 text-white animate-bounce">
-                      <AlertTriangle className="w-3 h-3" /> Ends Soon
+                  {isApproachingEnd && (
+                    <span className="flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-amber-500 text-white animate-bounce shrink-0 whitespace-nowrap">
+                      <AlertTriangle className="w-3 h-3 shrink-0" /> <span className="hidden 2xl:inline">Ends Soon</span>
                     </span>
                   )}
                 </div>
@@ -172,84 +243,63 @@ export const Navbar: React.FC<NavbarProps> = ({
                 {/* Mobile version */}
                 <div
                   id="shift-indicator-mobile"
-                  onClick={() => setShiftMenuOpen(!shiftMenuOpen)}
-                  className={`flex sm:hidden items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs font-bold ${currentStyles.pill}`}
+                  className={`flex sm:hidden items-center gap-1.5 px-2 py-1 rounded-lg border text-xs font-bold ${currentStyles.pill} shrink-0 whitespace-nowrap`}
+                  title={shift.isOnCallDay ? `On-Call 24H (${shift.dayName})` : `Operating Duty Shift: ${activeDutyShift} Shift`}
                 >
-                  <span className={`w-2 h-2 rounded-full animate-pulse ${currentStyles.dot}`} />
+                  <span className={`w-2 h-2 rounded-full animate-pulse ${currentStyles.dot} shrink-0`} />
                   <span>{activeDutyShift}</span>
+                  {shift.isOnCallDay && (
+                    <span className="text-[9px] font-bold px-1 rounded bg-emerald-600 text-white shrink-0 whitespace-nowrap">
+                      ON-CALL
+                    </span>
+                  )}
                 </div>
-
-                {/* Dropdown to switch shift */}
-                {shiftMenuOpen && (
-                  <div className="absolute left-0 mt-2 w-64 bg-white dark:bg-[#16324F] rounded-xl shadow-xl border border-slate-200 dark:border-slate-800 p-2 z-50 animate-in fade-in slide-in-from-top-1">
-                    <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 px-2 py-1">
-                      Operating Duty Shift
-                    </div>
-                    {(['Morning', 'Mid', 'Night'] as const).map(sName => {
-                      const isSelected = activeDutyShift === sName;
-                      return (
-                        <button
-                          key={sName}
-                          type="button"
-                          onClick={() => {
-                            if (onSwitchShift) onSwitchShift(sName);
-                            setShiftMenuOpen(false);
-                          }}
-                          className={`w-full text-left px-3 py-2 rounded-lg text-xs font-semibold flex items-center justify-between cursor-pointer transition-colors ${
-                            isSelected
-                              ? 'bg-blue-50 text-blue-900 dark:bg-blue-950/60 dark:text-blue-300'
-                              : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
-                          }`}
-                        >
-                          <div className="flex items-center gap-2">
-                            <span
-                              className={`w-2 h-2 rounded-full ${
-                                sName === 'Morning' ? 'bg-blue-500' : sName === 'Mid' ? 'bg-amber-500' : 'bg-purple-500'
-                              }`}
-                            />
-                            <span>{sName} Shift</span>
-                          </div>
-                          {isSelected && <span className="text-[10px] font-bold uppercase text-[#0F4C81] dark:text-blue-400">Active</span>}
-                        </button>
-                      );
-                    })}
-                    <div className="mt-1 pt-1.5 border-t border-slate-100 dark:border-slate-800 px-2 text-[10px] text-slate-400">
-                      System Time: {shift.timezone}
-                    </div>
-                  </div>
-                )}
               </div>
             )}
           </div>
 
           {/* Navigation Links */}
-          <nav className="hidden lg:flex items-center gap-1">
+          <nav className="hidden lg:flex items-center gap-0.5 xl:gap-1.5 shrink-0">
             <button
               id="nav-tab-dashboard"
               onClick={() => handleSelectTab('dashboard')}
-              className={`flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+              className={`flex items-center gap-1.5 px-2 xl:px-2.5 py-1.5 rounded-lg text-xs xl:text-sm font-medium transition-colors shrink-0 whitespace-nowrap cursor-pointer ${
                 activeTab === 'dashboard'
                   ? 'bg-slate-100 dark:bg-slate-800 text-[#0F4C81] dark:text-blue-400 font-semibold'
                   : 'text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800/60'
               }`}
             >
-              <LayoutDashboard className="w-4 h-4" />
-              Dashboard
+              <LayoutDashboard className="w-4 h-4 shrink-0" />
+              <span>Dashboard</span>
+            </button>
+
+            <button
+              id="nav-tab-briefing"
+              onClick={() => handleSelectTab('briefing')}
+              className={`flex items-center gap-1.5 px-2 xl:px-2.5 py-1.5 rounded-lg text-xs xl:text-sm font-medium transition-colors shrink-0 whitespace-nowrap cursor-pointer ${
+                activeTab === 'briefing'
+                  ? 'bg-slate-100 dark:bg-slate-800 text-[#0F4C81] dark:text-blue-400 font-semibold'
+                  : 'text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800/60'
+              }`}
+            >
+              <Sparkles className="w-4 h-4 text-amber-500 shrink-0" />
+              <span className="hidden 2xl:inline">Daily Briefing</span>
+              <span className="inline 2xl:hidden">Briefing</span>
             </button>
 
             <button
               id="nav-tab-tasks"
               onClick={() => handleSelectTab('tasks')}
-              className={`flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+              className={`flex items-center gap-1.5 px-2 xl:px-2.5 py-1.5 rounded-lg text-xs xl:text-sm font-medium transition-colors shrink-0 whitespace-nowrap cursor-pointer ${
                 activeTab === 'tasks'
                   ? 'bg-slate-100 dark:bg-slate-800 text-[#0F4C81] dark:text-blue-400 font-semibold'
                   : 'text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800/60'
               }`}
             >
-              <CheckSquare className="w-4 h-4" />
-              Tasks
+              <CheckSquare className="w-4 h-4 shrink-0" />
+              <span>Tasks</span>
               {criticalCount > 0 && (
-                <span className="px-1.5 py-0.2 text-[11px] font-bold bg-rose-600 text-white rounded-full">
+                <span className="px-1.5 py-0.2 text-[10px] xl:text-[11px] font-bold bg-rose-600 text-white rounded-full shrink-0 whitespace-nowrap">
                   {criticalCount}
                 </span>
               )}
@@ -258,16 +308,17 @@ export const Navbar: React.FC<NavbarProps> = ({
             <button
               id="nav-tab-handover"
               onClick={() => handleSelectTab('handover')}
-              className={`flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+              className={`flex items-center gap-1.5 px-2 xl:px-2.5 py-1.5 rounded-lg text-xs xl:text-sm font-medium transition-colors shrink-0 whitespace-nowrap cursor-pointer ${
                 activeTab === 'handover'
                   ? 'bg-slate-100 dark:bg-slate-800 text-[#0F4C81] dark:text-blue-400 font-semibold'
                   : 'text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800/60'
               }`}
             >
-              <ArrowRightLeft className="w-4 h-4" />
-              Handover &amp; Closure
+              <ArrowRightLeft className="w-4 h-4 shrink-0" />
+              <span className="hidden 2xl:inline">Handover &amp; Closure</span>
+              <span className="inline 2xl:hidden">Handover</span>
               {unresolvedCount > 0 && (
-                <span className="px-1.5 py-0.2 text-[11px] font-bold bg-amber-500 text-white rounded-full">
+                <span className="px-1.5 py-0.2 text-[10px] xl:text-[11px] font-bold bg-amber-500 text-white rounded-full shrink-0 whitespace-nowrap">
                   {unresolvedCount}
                 </span>
               )}
@@ -276,74 +327,95 @@ export const Navbar: React.FC<NavbarProps> = ({
             <button
               id="nav-tab-reports"
               onClick={() => handleSelectTab('reports')}
-              className={`flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+              className={`flex items-center gap-1.5 px-2 xl:px-2.5 py-1.5 rounded-lg text-xs xl:text-sm font-medium transition-colors shrink-0 whitespace-nowrap cursor-pointer ${
                 activeTab === 'reports'
                   ? 'bg-slate-100 dark:bg-slate-800 text-[#0F4C81] dark:text-blue-400 font-semibold'
                   : 'text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800/60'
               }`}
             >
-              <BarChart3 className="w-4 h-4" />
-              Reports
+              <BarChart3 className="w-4 h-4 shrink-0" />
+              <span>Reports</span>
             </button>
 
             {user?.role === 'ADMIN' && (
               <button
                 id="nav-tab-admin"
                 onClick={() => handleSelectTab('settings')}
-                className={`flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+                className={`flex items-center gap-1.5 px-2 xl:px-2.5 py-1.5 rounded-lg text-xs xl:text-sm font-medium transition-colors shrink-0 whitespace-nowrap cursor-pointer ${
                   activeTab === 'settings' || activeTab === 'admin'
                     ? 'bg-slate-100 dark:bg-slate-800 text-[#0F4C81] dark:text-blue-400 font-semibold'
                     : 'text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800/60'
                 }`}
               >
-                <Shield className="w-4 h-4" />
-                Admin
+                <Shield className="w-4 h-4 shrink-0 text-indigo-500 dark:text-indigo-400" />
+                <span>Admin</span>
+              </button>
+            )}
+
+            {user?.role === 'SUPERVISOR' && (
+              <button
+                id="nav-tab-options"
+                onClick={() => handleSelectTab('settings')}
+                className={`flex items-center gap-1.5 px-2 xl:px-2.5 py-1.5 rounded-lg text-xs xl:text-sm font-medium transition-colors shrink-0 whitespace-nowrap cursor-pointer ${
+                  activeTab === 'settings' || activeTab === 'options' || activeTab === 'admin'
+                    ? 'bg-slate-100 dark:bg-slate-800 text-[#0F4C81] dark:text-blue-400 font-semibold'
+                    : 'text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800/60'
+                }`}
+              >
+                <Sliders className="w-4 h-4 shrink-0 text-cyan-600 dark:text-cyan-400" />
+                <span>Options</span>
               </button>
             )}
           </nav>
 
           {/* Action Center & User Menu */}
-          <div className="flex items-center gap-3">
-            {/* Quick Demo Scenario Trigger (Section 69) */}
-            {onLoadDemo && (
-              <button
-                id="btn-load-demo-scenario"
-                onClick={onLoadDemo}
-                title="Load the Morning -> Mid Demonstration Scenario (Section 69)"
-                className="hidden sm:flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-md bg-indigo-50 dark:bg-indigo-950/50 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 hover:bg-indigo-100 transition-colors"
-              >
-                <Sparkles className="w-3.5 h-3.5" />
-                <span>Demo Scenario</span>
-              </button>
-            )}
-
+          <div className="flex items-center gap-2 sm:gap-2.5 shrink-0 whitespace-nowrap pl-2.5 sm:pl-3 border-l border-slate-200 dark:border-slate-800">
             {/* Dark Mode Toggle */}
             <button
+              type="button"
               id="btn-theme-toggle"
               onClick={handleToggleDarkMode}
-              className="p-2 rounded-md text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+              className="w-9 h-9 flex items-center justify-center rounded-xl text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 border border-slate-200/80 dark:border-slate-700/80 transition-colors cursor-pointer shrink-0"
               title={darkMode ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
+              aria-label={darkMode ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
             >
-              {darkMode ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+              {darkMode ? (
+                <Sun className="w-4 h-4 text-amber-500 shrink-0" />
+              ) : (
+                <Moon className="w-4 h-4 text-slate-600 dark:text-slate-300 shrink-0" />
+              )}
             </button>
 
             {/* User Dropdown */}
-            <div className="relative">
+            <div className="relative shrink-0" ref={userMenuRef}>
               <button
+                type="button"
                 id="user-profile-menu-button"
-                onClick={() => setUserMenuOpen(!userMenuOpen)}
-                className="flex items-center gap-2 p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                onClick={() => setUserMenuOpen(prev => !prev)}
+                aria-expanded={userMenuOpen}
+                aria-haspopup="true"
+                title={user?.fullName ? `${user.fullName} (@${user?.username}) - ${user?.role}` : `@${user?.username || 'user'} - ${user?.role}`}
+                className="flex items-center gap-1.5 sm:gap-2 p-1 sm:p-1.5 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 border border-transparent hover:border-slate-200 dark:hover:border-slate-700 transition-all cursor-pointer select-none shrink-0 max-w-[125px] xl:max-w-[155px] overflow-hidden"
               >
-                <div className="w-8 h-8 rounded-full bg-[#0F4C81] text-white flex items-center justify-center font-bold text-xs uppercase">
+                <div className="w-8 h-8 rounded-full bg-[#0F4C81] text-white flex items-center justify-center font-bold text-xs uppercase shadow-xs shrink-0 ring-2 ring-transparent group-hover:ring-blue-300">
                   {user?.username ? user.username.slice(0, 2) : 'OP'}
                 </div>
-                <div className="hidden sm:block text-left text-xs leading-tight">
-                  <div className="font-semibold text-slate-900 dark:text-white">
-                    {user?.fullName || user?.username || 'Operator'}
+                <div className="hidden xl:block text-left text-xs leading-tight min-w-0 max-w-[72px] xl:max-w-[95px] overflow-hidden">
+                  <div
+                    className="font-semibold text-slate-900 dark:text-white truncate block whitespace-nowrap"
+                    title={user?.fullName || user?.username || 'Operator'}
+                  >
+                    {formatCompactName(user?.fullName, user?.username)}
                   </div>
-                  <div className="text-slate-500 dark:text-slate-400">
-                    @{user?.username || 'user'} &bull;{' '}
-                    <span className="font-medium text-[#0F4C81] dark:text-blue-400">
+                  <div className="text-slate-500 dark:text-slate-400 text-[10px] flex items-center gap-1 min-w-0 overflow-hidden">
+                    <span
+                      className="truncate max-w-[40px] xl:max-w-[55px] inline-block font-mono whitespace-nowrap"
+                      title={`@${user?.username || 'user'}`}
+                    >
+                      @{user?.username || 'user'}
+                    </span>
+                    <span className="shrink-0 text-slate-300 dark:text-slate-600">&bull;</span>
+                    <span className="font-semibold text-[#0F4C81] dark:text-blue-400 shrink-0 text-[9px] uppercase">
                       {user?.role || 'OPERATOR'}
                     </span>
                   </div>
@@ -353,44 +425,101 @@ export const Navbar: React.FC<NavbarProps> = ({
               {userMenuOpen && (
                 <div
                   id="user-dropdown-menu"
-                  className="absolute right-0 mt-2 w-56 bg-white dark:bg-[#16324F] rounded-lg shadow-lg border border-slate-200 dark:border-slate-700 py-1.5 z-50 text-sm"
+                  className="absolute right-0 top-full mt-2 w-56 sm:w-60 bg-white dark:bg-[#16324F] rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-700 py-1.5 z-50 text-sm animate-in fade-in zoom-in-95 duration-100"
                 >
-                  <div className="px-4 py-2 border-b border-slate-100 dark:border-slate-800">
-                    <p className="font-semibold text-slate-900 dark:text-white truncate">
+                  <div className="px-4 py-2.5 border-b border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/40 rounded-t-2xl">
+                    <p
+                      className="font-bold text-slate-900 dark:text-white truncate text-xs"
+                      title={user?.fullName || user?.username || 'Operator'}
+                    >
                       {user?.fullName || user?.username || 'Operator'}
                     </p>
-                    <p className="text-xs text-slate-500 dark:text-slate-400">
-                      Role: <span className="font-medium">{user?.role || 'OPERATOR'}</span>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                      Role: <span className="font-bold text-[#0F4C81] dark:text-blue-400">{user?.role || 'OPERATOR'}</span>
                     </p>
+                    {user?.email && (
+                      <p className="text-[10px] text-slate-400 truncate mt-0.5" title={user.email}>
+                        {user.email}
+                      </p>
+                    )}
                   </div>
 
-                  {onChangePassword && (
+                  <div className="py-1">
+                    {user?.role === 'ADMIN' && (
+                      <button
+                        type="button"
+                        id="menu-btn-admin-panel"
+                        onClick={() => {
+                          setUserMenuOpen(false);
+                          handleSelectTab('settings');
+                        }}
+                        className="w-full flex items-center gap-2.5 px-4 py-2 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 text-left text-xs font-medium cursor-pointer transition-colors"
+                      >
+                        <Shield className="w-4 h-4 text-indigo-500 shrink-0" />
+                        <span>Admin Console</span>
+                      </button>
+                    )}
+
+                    {user?.role === 'SUPERVISOR' && (
+                      <button
+                        type="button"
+                        id="menu-btn-supervisor-options"
+                        onClick={() => {
+                          setUserMenuOpen(false);
+                          handleSelectTab('settings');
+                        }}
+                        className="w-full flex items-center gap-2.5 px-4 py-2 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 text-left text-xs font-medium cursor-pointer transition-colors"
+                      >
+                        <Sliders className="w-4 h-4 text-cyan-600 shrink-0" />
+                        <span>Operations Options</span>
+                      </button>
+                    )}
+
+                    {onChangePassword && (
+                      <button
+                        type="button"
+                        id="menu-btn-change-password"
+                        onClick={() => {
+                          setUserMenuOpen(false);
+                          onChangePassword();
+                        }}
+                        className="w-full flex items-center gap-2.5 px-4 py-2 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 text-left text-xs font-medium cursor-pointer transition-colors"
+                      >
+                        <Key className="w-4 h-4 text-slate-400 shrink-0" />
+                        <span>Change Password</span>
+                      </button>
+                    )}
+
                     <button
-                      id="menu-btn-change-password"
+                      type="button"
+                      id="menu-btn-about"
                       onClick={() => {
                         setUserMenuOpen(false);
-                        onChangePassword();
+                        setAboutModalOpen(true);
                       }}
-                      className="w-full flex items-center gap-2.5 px-4 py-2 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 text-left"
+                      className="w-full flex items-center gap-2.5 px-4 py-2 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 text-left text-xs font-medium cursor-pointer transition-colors"
                     >
-                      <Key className="w-4 h-4 text-slate-400" />
-                      Change Password
+                      <Info className="w-4 h-4 text-blue-500 shrink-0" />
+                      <span>About Hando</span>
                     </button>
-                  )}
+                  </div>
 
                   <div className="border-t border-slate-100 dark:border-slate-800 my-1" />
 
-                  <button
-                    id="menu-btn-logout"
-                    onClick={() => {
-                      setUserMenuOpen(false);
-                      onLogout();
-                    }}
-                    className="w-full flex items-center gap-2.5 px-4 py-2 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 text-left"
-                  >
-                    <LogOut className="w-4 h-4" />
-                    Sign Out
-                  </button>
+                  <div className="px-1.5 pb-0.5">
+                    <button
+                      type="button"
+                      id="menu-btn-logout"
+                      onClick={() => {
+                        setUserMenuOpen(false);
+                        onLogout();
+                      }}
+                      className="w-full flex items-center gap-2.5 px-3 py-2 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 rounded-xl text-left text-xs font-semibold cursor-pointer transition-colors"
+                    >
+                      <LogOut className="w-4 h-4 shrink-0" />
+                      <span>Sign Out</span>
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
@@ -408,6 +537,15 @@ export const Navbar: React.FC<NavbarProps> = ({
         >
           <LayoutDashboard className="w-4 h-4" />
           <span>Dashboard</span>
+        </button>
+        <button
+          onClick={() => handleSelectTab('briefing')}
+          className={`flex flex-col items-center py-1 px-2 rounded ${
+            activeTab === 'briefing' ? 'text-[#0F4C81] dark:text-blue-400 font-bold' : 'text-slate-600 dark:text-slate-400'
+          }`}
+        >
+          <Sparkles className="w-4 h-4 text-amber-500" />
+          <span>Briefing</span>
         </button>
         <button
           onClick={() => handleSelectTab('tasks')}
@@ -457,7 +595,27 @@ export const Navbar: React.FC<NavbarProps> = ({
             <span>Admin</span>
           </button>
         )}
+        {user?.role === 'SUPERVISOR' && (
+          <button
+            onClick={() => handleSelectTab('settings')}
+            className={`flex flex-col items-center py-1 px-2 rounded ${
+              activeTab === 'settings' || activeTab === 'options' ? 'text-[#0F4C81] dark:text-blue-400 font-bold' : 'text-slate-600 dark:text-slate-400'
+            }`}
+          >
+            <Sliders className="w-4 h-4" />
+            <span>Options</span>
+          </button>
+        )}
       </div>
+
+      {/* About Hando Modal */}
+      <AboutModal
+        isOpen={aboutModalOpen}
+        onClose={() => setAboutModalOpen(false)}
+        appName="Hando"
+        teamName={teamName}
+        currentUserEmail={user?.email || 'hossamhalawany@gmail.com'}
+      />
     </header>
   );
 };

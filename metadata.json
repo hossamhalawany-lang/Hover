@@ -1,6 +1,6 @@
 {
   "name": "Hando",
-  "description": "Hando - Operations Shift Handover Management Portal. Preventing forgotten tasks between shifts with controlled operational handover workflows.",
+  "description": "Hando - Operations Shift Handover Management Portal with controlled handover workflows, and atomic JSON backup, export, and disaster recovery restore.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

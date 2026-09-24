@@ -76,7 +76,8 @@ export function initDatabase() {
       handover_state TEXT NOT NULL DEFAULT 'None',
       version INTEGER NOT NULL DEFAULT 1,
       is_cob INTEGER NOT NULL DEFAULT 0,
-      cob_count INTEGER DEFAULT NULL
+      cob_count INTEGER DEFAULT NULL,
+      completed_shift TEXT
     );
 
     CREATE TABLE IF NOT EXISTS task_history (
@@ -210,6 +211,41 @@ export function initDatabase() {
     db.exec('ALTER TABLE tasks ADD COLUMN cob_count INTEGER DEFAULT NULL;');
   } catch {
     // Ignore error if column already exists
+  }
+
+  // Ensure completed_shift column exists on tasks table
+  try {
+    db.exec('ALTER TABLE tasks ADD COLUMN completed_shift TEXT;');
+  } catch {
+    // Ignore error if column already exists
+  }
+
+  // Backfill completed_shift and synchronize current_shift for all completed tasks
+  try {
+    db.exec(`
+      UPDATE tasks
+      SET completed_shift = COALESCE(
+        (SELECT shift FROM task_history WHERE task_id = tasks.id AND (action LIKE '%COMPLETE%' OR new_status = 'Completed') ORDER BY id DESC LIMIT 1),
+        current_shift,
+        original_shift
+      )
+      WHERE status = 'Completed' AND (completed_shift IS NULL OR completed_shift = '');
+
+      UPDATE tasks
+      SET current_shift = completed_shift
+      WHERE status = 'Completed' AND completed_shift IS NOT NULL;
+
+      UPDATE tasks
+      SET is_cob = 0, cob_count = NULL
+      WHERE title IN (
+        'Run production Pre-COB Service',
+        'Run Production COB',
+        'Run Production Post COB Service',
+        'Restart Browser JVM''s after COB'
+      );
+    `);
+  } catch (err) {
+    console.warn('Completed shift backfill notice:', err);
   }
 
   // Ensure email column exists on users table

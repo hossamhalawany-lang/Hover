@@ -75,6 +75,7 @@ export interface Task {
   isHandoverLocked?: boolean;
   is_cob?: number | boolean;
   cob_count?: number | null;
+  completed_shift?: ShiftName | null;
 }
 
 export interface TaskHistoryItem {

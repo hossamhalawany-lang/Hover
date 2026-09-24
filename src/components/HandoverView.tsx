@@ -79,13 +79,20 @@ export const HandoverView: React.FC<HandoverViewProps> = ({
     const handleRefresh = () => {
       loadData();
     };
+    const handleOpenClosure = () => {
+      if (handoverAcknowledged) {
+        handleStartClosure();
+      }
+    };
     window.addEventListener('task:updated', handleRefresh);
     window.addEventListener('operational:refresh', handleRefresh);
+    window.addEventListener('handover:open-closure', handleOpenClosure);
     return () => {
       window.removeEventListener('task:updated', handleRefresh);
       window.removeEventListener('operational:refresh', handleRefresh);
+      window.removeEventListener('handover:open-closure', handleOpenClosure);
     };
-  }, []);
+  }, [handoverAcknowledged]);
 
   const loadData = async () => {
     setLoading(true);
@@ -565,7 +572,8 @@ export const HandoverView: React.FC<HandoverViewProps> = ({
 
             {/* List of Completed Tasks for Today */}
             {((currentHandover?.completedTasksToday || []).filter(task => {
-              if (completedShiftFilter !== 'ALL' && task.current_shift !== completedShiftFilter && task.original_shift !== completedShiftFilter) {
+              const effectiveShift = task.completed_shift || task.current_shift || task.original_shift || 'Morning';
+              if (completedShiftFilter !== 'ALL' && effectiveShift !== completedShiftFilter) {
                 return false;
               }
               if (completedSearch.trim()) {
@@ -593,7 +601,8 @@ export const HandoverView: React.FC<HandoverViewProps> = ({
                   </thead>
                   <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                     {(currentHandover?.completedTasksToday || []).filter(task => {
-                      if (completedShiftFilter !== 'ALL' && task.current_shift !== completedShiftFilter && task.original_shift !== completedShiftFilter) {
+                      const effectiveShift = task.completed_shift || task.current_shift || task.original_shift || 'Morning';
+                      if (completedShiftFilter !== 'ALL' && effectiveShift !== completedShiftFilter) {
                         return false;
                       }
                       if (completedSearch.trim()) {
@@ -605,7 +614,9 @@ export const HandoverView: React.FC<HandoverViewProps> = ({
                         return Boolean(codeMatch || titleMatch || userMatch || noteMatch);
                       }
                       return true;
-                    }).map(task => (
+                    }).map(task => {
+                      const effectiveShift = task.completed_shift || task.current_shift || task.original_shift || 'Morning';
+                      return (
                       <tr
                         key={task.id}
                         onClick={() => onOpenTask(task.id)}
@@ -636,8 +647,14 @@ export const HandoverView: React.FC<HandoverViewProps> = ({
                           </div>
                         </td>
                         <td className="py-3 px-3 whitespace-nowrap">
-                          <span className="px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-[11px] font-medium text-slate-700 dark:text-slate-300">
-                            {task.current_shift || task.original_shift} Shift
+                          <span className={`px-2 py-0.5 rounded text-[11px] font-medium ${
+                            effectiveShift === 'Morning'
+                              ? 'bg-amber-100 text-amber-800 dark:bg-amber-950/50 dark:text-amber-300'
+                              : effectiveShift === 'Mid'
+                              ? 'bg-blue-100 text-blue-800 dark:bg-blue-950/50 dark:text-blue-300'
+                              : 'bg-purple-100 text-purple-800 dark:bg-purple-950/50 dark:text-purple-300'
+                          }`}>
+                            {effectiveShift} Shift
                           </span>
                         </td>
                         <td className="py-3 px-3">
@@ -669,7 +686,7 @@ export const HandoverView: React.FC<HandoverViewProps> = ({
                           </span>
                         </td>
                       </tr>
-                    ))}
+                    );})}
                   </tbody>
                 </table>
               </div>

@@ -288,6 +288,12 @@ export const api = {
     });
   },
 
+  async createProductionCobTasks(): Promise<{ success: boolean; message: string; tasks: Task[] }> {
+    return request('/api/tasks/create-production-cob-tasks', {
+      method: 'POST'
+    });
+  },
+
   async updateTask(id: number, data: any): Promise<Task> {
     return request(`/api/tasks/${id}`, {
       method: 'PUT',

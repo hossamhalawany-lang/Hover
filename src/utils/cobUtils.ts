@@ -5,8 +5,18 @@ import { Task } from '../types';
  * Text parsing and regex on title/description are strictly forbidden to eliminate false positives
  * (e.g. ticket numbers like CH-450, phrases like 'Before COB').
  */
-export function isCobTask(task: Task | { is_cob?: number | boolean | null; cob_count?: number | null } | null | undefined): boolean {
+export function isCobTask(task: Task | { is_cob?: number | boolean | null; cob_count?: number | null; title?: string } | null | undefined): boolean {
   if (!task) return false;
+  // Production COB tasks are single-cycle standard tasks and must not trigger multi-count COB execution modal
+  const productionCobTitles = [
+    'Run production Pre-COB Service',
+    'Run Production COB',
+    'Run Production Post COB Service',
+    "Restart Browser JVM's after COB"
+  ];
+  if (task.title && productionCobTitles.includes(task.title)) {
+    return false;
+  }
   return Boolean(
     task.is_cob === 1 ||
     task.is_cob === true ||

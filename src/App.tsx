@@ -15,9 +15,19 @@ import { DailyBriefingSection } from './components/DailyBriefingSection';
 import { TaskDetailModal } from './components/TaskDetailModal';
 import { HandoverEmailModal } from './components/HandoverEmailModal';
 import { ChangePasswordModal } from './components/ChangePasswordModal';
+import { UnclosedShiftModal } from './components/UnclosedShiftModal';
+import { MobileRestrictionScreen } from './components/MobileRestrictionScreen';
 import { api } from './api';
 import { User, ShiftInfo, Task, AppSettings, ShiftName } from './types';
 import { Lock, CheckCircle2 } from 'lucide-react';
+
+const checkIsMobileDevice = (): boolean => {
+  if (typeof window === 'undefined') return false;
+  const ua = navigator.userAgent || navigator.vendor || (window as any).opera || '';
+  const isMobileUA = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(ua);
+  const isSmallScreen = window.innerWidth < 1024;
+  return isMobileUA || isSmallScreen;
+};
 
 export default function App() {
   // App system status
@@ -32,6 +42,8 @@ export default function App() {
   const [unresolvedCount, setUnresolvedCount] = useState(0);
   const [criticalCount, setCriticalCount] = useState(0);
   const [handoverAcknowledged, setHandoverAcknowledged] = useState(false);
+  const [isShiftClosed, setIsShiftClosed] = useState(false);
+  const [unclosedShiftModalOpen, setUnclosedShiftModalOpen] = useState(false);
   const [previousShiftNotes, setPreviousShiftNotes] = useState<string | null>(null);
 
   // Navigation & UI state
@@ -64,6 +76,28 @@ export default function App() {
     }
     return false;
   });
+
+  // Mobile device restriction state (strictly enforced with no bypass)
+  const [isMobileRestricted, setIsMobileRestricted] = useState<boolean>(() => {
+    if (typeof window !== 'undefined') {
+      return checkIsMobileDevice();
+    }
+    return false;
+  });
+
+  useEffect(() => {
+    const handleViewportChange = () => {
+      if (typeof window !== 'undefined') {
+        setIsMobileRestricted(checkIsMobileDevice());
+      }
+    };
+    window.addEventListener('resize', handleViewportChange);
+    window.addEventListener('orientationchange', handleViewportChange);
+    return () => {
+      window.removeEventListener('resize', handleViewportChange);
+      window.removeEventListener('orientationchange', handleViewportChange);
+    };
+  }, []);
 
   // 1. Initial health and session check
   const checkStatusAndSession = useCallback(async () => {
@@ -157,6 +191,7 @@ export default function App() {
 
       if (handoverRes) {
         setHandoverAcknowledged(Boolean(handoverRes.isShiftAccepted));
+        setIsShiftClosed(Boolean(handoverRes.isShiftClosed));
         if (handoverRes.latestHandover) {
           setPreviousShiftNotes(handoverRes.latestHandover.general_notes || null);
         } else {
@@ -175,9 +210,50 @@ export default function App() {
   useEffect(() => {
     if (currentUser) {
       refreshOperationalData();
-      // Polling interval (every 15 seconds) for shift time countdown and live tasks
+      // Polling interval (every 15 seconds) as fallback for shift time countdown and live tasks
       const interval = setInterval(refreshOperationalData, 15000);
-      return () => clearInterval(interval);
+
+      // Real-time synchronization via Server-Sent Events (SSE)
+      let eventSource: EventSource | null = null;
+      let reconnectTimer: any = null;
+
+      const connectSSE = () => {
+        try {
+          eventSource = new EventSource('/api/events');
+
+          eventSource.onmessage = (event) => {
+            try {
+              const data = JSON.parse(event.data);
+              if (['TASK_CREATED', 'TASK_UPDATED', 'HANDOVER_ACCEPTED', 'HANDOVER_UPDATED', 'OPERATIONAL_REFRESH'].includes(data.type)) {
+                window.dispatchEvent(new CustomEvent('operational:refresh'));
+                window.dispatchEvent(new CustomEvent('task:updated'));
+                refreshOperationalData();
+              }
+            } catch (err) {
+              // Ignore non-JSON heartbeat
+            }
+          };
+
+          eventSource.onerror = () => {
+            if (eventSource) {
+              eventSource.close();
+              eventSource = null;
+            }
+            // Reconnect after 3 seconds on connection drop
+            reconnectTimer = setTimeout(connectSSE, 3000);
+          };
+        } catch (err) {
+          console.warn('SSE EventSource setup warning:', err);
+        }
+      };
+
+      connectSSE();
+
+      return () => {
+        clearInterval(interval);
+        if (eventSource) eventSource.close();
+        if (reconnectTimer) clearTimeout(reconnectTimer);
+      };
     }
   }, [currentUser, refreshOperationalData]);
 
@@ -207,19 +283,53 @@ export default function App() {
     };
   }, [refreshOperationalData]);
 
-  // Logout handler
-  const handleLogout = async () => {
+  // Direct logout execution
+  const performLogout = async () => {
     try {
       await api.logout();
     } catch (err) {
       console.error(err);
     } finally {
+      setUnclosedShiftModalOpen(false);
       setCurrentUser(null);
       setActiveTab('handover');
       if (typeof window !== 'undefined') {
         localStorage.setItem('hando_active_tab', 'handover');
       }
     }
+  };
+
+  // Logout trigger with unclosed shift reminder
+  const handleLogout = async () => {
+    try {
+      // Check real-time handover closure state
+      const handoverRes = await api.getCurrentHandover().catch(() => null);
+      const closed = handoverRes ? Boolean(handoverRes.isShiftClosed) : isShiftClosed;
+      setIsShiftClosed(closed);
+
+      // If shift is already closed, sign out immediately without any warning/reminder
+      if (closed) {
+        await performLogout();
+        return;
+      }
+
+      // If shift is not closed yet, show friendly reminder modal
+      setUnclosedShiftModalOpen(true);
+    } catch (err) {
+      if (isShiftClosed) {
+        await performLogout();
+      } else {
+        setUnclosedShiftModalOpen(true);
+      }
+    }
+  };
+
+  const handleCloseShiftFirst = () => {
+    setUnclosedShiftModalOpen(false);
+    handleSelectTab('handover');
+    setTimeout(() => {
+      window.dispatchEvent(new CustomEvent('handover:open-closure'));
+    }, 150);
   };
 
   // Quick acknowledge handler
@@ -270,6 +380,11 @@ export default function App() {
     setInitialized(false);
     window.location.reload();
   };
+
+  // Mobile Device & Viewport Restriction (Enterprise Desktop Workstations Only)
+  if (isMobileRestricted) {
+    return <MobileRestrictionScreen />;
+  }
 
   if (loading) {
     return (
@@ -455,6 +570,17 @@ export default function App() {
           onClose={() => setChangePasswordOpen(false)}
         />
       )}
+
+      {/* Unclosed Shift Warning / Reminder on Sign Out */}
+      <UnclosedShiftModal
+        isOpen={unclosedShiftModalOpen}
+        shiftName={shift?.name || 'Active'}
+        nextShiftName={shift?.nextShift || 'Incoming'}
+        unresolvedCount={unresolvedCount}
+        onCloseShiftFirst={handleCloseShiftFirst}
+        onConfirmLogout={performLogout}
+        onCancel={() => setUnclosedShiftModalOpen(false)}
+      />
     </div>
   );
 }

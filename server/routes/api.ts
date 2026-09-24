@@ -37,6 +37,47 @@ router.use((req, res, next) => {
   next();
 });
 
+// Real-time Server-Sent Events (SSE) broadcasting
+const sseClients = new Set<express.Response>();
+
+export function broadcastEvent(eventType: string, payload: any = {}) {
+  const data = JSON.stringify({ type: eventType, payload, timestamp: new Date().toISOString() });
+  for (const client of sseClients) {
+    try {
+      client.write(`data: ${data}\n\n`);
+    } catch {
+      sseClients.delete(client);
+    }
+  }
+}
+
+// SSE live stream endpoint for instant real-time synchronization across all tabs and operators
+router.get('/events', (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders?.();
+
+  res.write(`data: ${JSON.stringify({ type: 'CONNECTED', timestamp: new Date().toISOString() })}\n\n`);
+
+  sseClients.add(res);
+
+  const heartbeat = setInterval(() => {
+    try {
+      res.write(': ping\n\n');
+    } catch {
+      clearInterval(heartbeat);
+      sseClients.delete(res);
+    }
+  }, 20000);
+
+  req.on('close', () => {
+    clearInterval(heartbeat);
+    sseClients.delete(res);
+  });
+});
+
 /* =========================================================================
    1. SETUP / INSTALLATION
    ========================================================================= */
@@ -693,7 +734,99 @@ router.post('/tasks', requireAuth, (req, res) => {
   logAudit(user, 'Task Created', 'TASK', taskCode, `Created task: ${title} (${taskPriority})${isCobActive ? ` [COB Execution: ${cobCountNum} COBs]` : ''}`);
 
   const createdTask = db.prepare('SELECT * FROM tasks WHERE id = ?').get(taskId);
+  broadcastEvent('TASK_CREATED', createdTask);
   res.status(201).json(createdTask);
+});
+
+// Create Production COB tasks (Exclusively for Mid Shift operators)
+// Sequential generation:
+// 1. Run production Pre-COB Service
+// 2. Run Production COB
+// 3. Run Production Post COB Service
+router.post('/tasks/create-production-cob-tasks', requireAuth, (req, res) => {
+  const activeShiftName = (req.user?.selectedShift && ['Morning', 'Mid', 'Night', '24H On-Call'].includes(req.user.selectedShift))
+    ? req.user.selectedShift
+    : getCurrentShift().name;
+
+  if (activeShiftName !== 'Mid' && req.user!.role !== 'ADMIN') {
+    return res.status(403).json({ error: 'This feature is exclusively available for Mid Shift operators.' });
+  }
+
+  const titles = [
+    'Run production Pre-COB Service',
+    'Run Production COB',
+    'Run Production Post COB Service',
+    "Restart Browser JVM's after COB"
+  ];
+
+  // Prevent creation if any previous Production COB tasks are still open / not completed
+  const pendingCobTasks = db.prepare(`
+    SELECT id, task_code, title, status FROM tasks
+    WHERE title IN (?, ?, ?, ?)
+      AND status NOT IN ('Completed', 'Cancelled')
+  `).all(titles[0], titles[1], titles[2], titles[3]) as any[];
+
+  if (pendingCobTasks.length > 0) {
+    const pendingList = pendingCobTasks.map(t => `${t.task_code}: ${t.title} [${t.status}]`).join(', ');
+    return res.status(409).json({
+      error: `Cannot create new Production COB tasks: Previous Production COB tasks are still pending (${pendingList}). All 4 tasks must be closed before generating a new batch.`
+    });
+  }
+
+  const now = new Date().toISOString();
+  const user = req.user!.username;
+  const createdTasks: any[] = [];
+
+  db.exec('BEGIN TRANSACTION;');
+  try {
+    for (const title of titles) {
+      const taskCode = getNextTaskCode();
+      const priority = title === 'Run Production COB' ? 'Critical' : 'High';
+      const category = 'Core Banking / COB';
+      const description = `Production COB execution sequence item: ${title} initiated by Mid Shift operator @${user}.`;
+
+      db.prepare(`
+        INSERT INTO tasks (
+          task_code, title, description, priority, status, category,
+          created_by, created_at, original_shift, current_shift,
+          last_updated_by, last_updated_at, handover_state, version, is_cob, cob_count
+        ) VALUES (?, ?, ?, ?, 'Pending', ?, ?, ?, 'Mid', 'Mid', ?, ?, 'None', 1, 0, NULL)
+      `).run(
+        taskCode,
+        title,
+        description,
+        priority,
+        category,
+        user,
+        now,
+        user,
+        now
+      );
+
+      const taskRow = db.prepare('SELECT * FROM tasks WHERE task_code = ?').get(taskCode) as any;
+      createdTasks.push(taskRow);
+
+      db.prepare(`
+        INSERT INTO task_history (task_id, task_code, action, user_name, shift, previous_status, new_status, notes, created_at)
+        VALUES (?, ?, 'Created', ?, 'Mid', null, 'Pending', 'Created via Production COB batch workflow for Mid Shift', ?)
+      `).run(taskRow.id, taskCode, user, now);
+    }
+
+    db.exec('COMMIT;');
+
+    logAudit(user, 'Create Production COB Tasks', 'TASK', createdTasks.map(t => t.task_code).join(', '), 'Created 4 Production COB tasks in sequence for Mid Shift');
+    broadcastEvent('TASKS_BATCH_CREATED', createdTasks);
+
+    res.json({
+      success: true,
+      message: 'Successfully created 4 Production COB tasks in sequence.',
+      tasks: createdTasks
+    });
+  } catch (err: any) {
+    db.exec('ROLLBACK;');
+    console.error('Error creating production COB tasks:', err);
+    res.status(500).json({ error: err.message || 'Failed to create production COB tasks.' });
+  }
 });
 
 // Update task metadata with Optimistic Concurrency check (Section 36)
@@ -798,7 +931,10 @@ router.post('/tasks/:id/status', requireAuth, (req, res) => {
     });
   }
 
-  const shift = getCurrentShift();
+  const activeShiftName = (req.user?.selectedShift && ['Morning', 'Mid', 'Night', '24H On-Call'].includes(req.user.selectedShift))
+    ? req.user.selectedShift
+    : getCurrentShift().name;
+  const shift = getShiftByName(activeShiftName);
   const user = req.user!.username;
   const now = new Date().toISOString();
   const prevStatus = task.status;
@@ -859,11 +995,17 @@ router.post('/tasks/:id/status', requireAuth, (req, res) => {
 
   const newVersion = task.version + 1;
 
+  // Determine updated current_shift and completed_shift
+  const updatedCurrentShift = newStatus === 'Completed' ? activeShiftName : (action === 'REOPEN' ? activeShiftName : activeShiftName);
+  const updatedCompletedShift = newStatus === 'Completed' ? activeShiftName : (action === 'REOPEN' ? null : task.completed_shift);
+
   // Build update query
   db.prepare(`
     UPDATE tasks
     SET status = ?,
         handover_state = ?,
+        current_shift = ?,
+        completed_shift = ?,
         completed_at = ?,
         completed_by = ?,
         completion_note = ?,
@@ -877,6 +1019,8 @@ router.post('/tasks/:id/status', requireAuth, (req, res) => {
   `).run(
     newStatus,
     handoverState,
+    updatedCurrentShift,
+    updatedCompletedShift,
     newStatus === 'Completed' ? now : (action === 'REOPEN' ? null : task.completed_at),
     newStatus === 'Completed' ? user : (action === 'REOPEN' ? null : task.completed_by),
     newStatus === 'Completed' ? (notes || task.completion_note) : (action === 'REOPEN' ? null : task.completion_note),
@@ -893,9 +1037,9 @@ router.post('/tasks/:id/status', requireAuth, (req, res) => {
   db.prepare(`
     INSERT INTO task_history (task_id, task_code, action, user_name, shift, previous_status, new_status, notes, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(task.id, task.task_code, action, user, shift.name, prevStatus, newStatus, notes || null, now);
+  `).run(task.id, task.task_code, action, user, activeShiftName, prevStatus, newStatus, notes || null, now);
 
-  logAudit(user, `Task ${action}`, 'TASK', task.task_code, `Status: ${prevStatus} -> ${newStatus}. Reason/Notes: ${notes || 'N/A'}`);
+  logAudit(user, `Task ${action}`, 'TASK', task.task_code, `Status: ${prevStatus} -> ${newStatus}. Shift: ${activeShiftName}. Reason/Notes: ${notes || 'N/A'}`);
 
   const updated = db.prepare(`
     SELECT t.*, u.full_name as completed_by_full_name, cu.full_name as assigned_user_full_name 
@@ -904,6 +1048,8 @@ router.post('/tasks/:id/status', requireAuth, (req, res) => {
     LEFT JOIN users cu ON t.assigned_user = cu.username
     WHERE t.id = ?
   `).get(taskId);
+
+  broadcastEvent('TASK_UPDATED', updated);
   res.json(updated);
 });
 
@@ -997,6 +1143,8 @@ router.post('/tasks/:id/cob-rollover', requireAuth, (req, res) => {
   db.prepare(`
     UPDATE tasks
     SET status = 'Completed',
+        current_shift = ?,
+        completed_shift = ?,
         completed_at = ?,
         completed_by = ?,
         completion_note = ?,
@@ -1004,7 +1152,7 @@ router.post('/tasks/:id/cob-rollover', requireAuth, (req, res) => {
         last_updated_at = ?,
         version = ?
     WHERE id = ?
-  `).run(now, user, completionNote, user, now, newVersion, taskId);
+  `).run(activeShiftName, activeShiftName, now, user, completionNote, user, now, newVersion, taskId);
 
   // History for original completed task
   db.prepare(`
@@ -1050,6 +1198,9 @@ router.post('/tasks/:id/cob-rollover', requireAuth, (req, res) => {
     LEFT JOIN users cu ON t.assigned_user = cu.username
     WHERE t.id = ?
   `).get(newTaskId);
+
+  broadcastEvent('TASK_UPDATED', updatedCurrentTask);
+  broadcastEvent('TASK_CREATED', createdNextTask);
 
   res.json({
     completedTask: updatedCurrentTask,
@@ -1255,21 +1406,72 @@ router.get('/handover/current', requireAuth, (req, res) => {
   }));
 
   // Query all tasks completed today (for this operational business date)
+  let completedWhereClause = "";
+  const queryParams: any[] = [];
+
+  if (activeShiftName === 'Night') {
+    // Night Shift sees its own completions (both pre-midnight & post-midnight) PLUS preceding Mid shift completions
+    const dates = [shift.businessDate, shift.calendarDate || shift.businessDate];
+    completedWhereClause = `
+      t.status = 'Completed' AND (
+        (t.completed_shift = 'Night' OR t.current_shift = 'Night')
+        OR
+        ((t.completed_shift = 'Mid' OR t.current_shift = 'Mid') AND (date(t.completed_at) = date(?) OR t.completed_at LIKE ? OR date(t.completed_at, '+3 hours') = date(?)))
+        OR
+        date(t.completed_at) IN (date(?), date(?))
+        OR
+        date(t.completed_at, '+3 hours') IN (date(?), date(?))
+        OR
+        t.completed_at LIKE ?
+        OR
+        t.completed_at LIKE ?
+      )
+    `;
+    queryParams.push(
+      shift.businessDate, `${shift.businessDate}%`, shift.businessDate,
+      shift.businessDate, dates[1],
+      shift.businessDate, dates[1],
+      `${shift.businessDate}%`, `${dates[1]}%`
+    );
+  } else if (activeShiftName === 'Mid') {
+    // Mid Shift sees Mid Shift + Morning Shift (preceding) completions for today's operational cycle
+    completedWhereClause = `
+      t.status = 'Completed' AND (
+        (t.completed_shift IN ('Morning', 'Mid') OR t.current_shift IN ('Morning', 'Mid'))
+        OR date(t.completed_at) = date(?) 
+        OR date(t.completed_at, '+3 hours') = date(?)
+        OR t.completed_at LIKE ?
+      )
+    `;
+    queryParams.push(shift.businessDate, shift.businessDate, `${shift.businessDate}%`);
+  } else {
+    // Morning Shift (or default) sees Morning Shift completions immediately + all tasks completed today
+    completedWhereClause = `
+      t.status = 'Completed' AND (
+        (t.completed_shift = 'Morning' OR t.current_shift = 'Morning')
+        OR date(t.completed_at) = date(?) 
+        OR date(t.completed_at, '+3 hours') = date(?)
+        OR t.completed_at LIKE ?
+      )
+    `;
+    queryParams.push(shift.businessDate, shift.businessDate, `${shift.businessDate}%`);
+  }
+
   const completedTasksToday = db.prepare(`
     SELECT t.*, u.full_name as completed_by_full_name, cu.full_name as assigned_user_full_name
     FROM tasks t
     LEFT JOIN users u ON t.completed_by = u.username
     LEFT JOIN users cu ON t.assigned_user = cu.username
-    WHERE t.status = 'Completed' AND (date(t.completed_at) = date(?) OR t.completed_at LIKE ?)
+    WHERE ${completedWhereClause}
     ORDER BY t.completed_at DESC, t.id DESC
-  `).all(shift.businessDate, `${shift.businessDate}%`) as any[];
+  `).all(...queryParams) as any[];
 
   // Compute comprehensive day progress summary
   const shiftBreakdown: Record<string, number> = { Morning: 0, Mid: 0, Night: 0, '24H On-Call': 0 };
   const userBreakdownMap = new Map<string, { username: string; full_name: string; count: number }>();
 
   for (const ct of completedTasksToday) {
-    const sName = ct.current_shift || ct.original_shift || 'Morning';
+    const sName = ct.completed_shift || ct.current_shift || ct.original_shift || 'Morning';
     shiftBreakdown[sName] = (shiftBreakdown[sName] || 0) + 1;
 
     const uName = ct.completed_by || 'Unknown';
@@ -1389,6 +1591,9 @@ router.post('/handover/acknowledge', requireAuth, (req, res) => {
   }
 
   logAudit(user, 'Shift Accepted', 'HANDOVER', handoverId ? String(handoverId) : null, `Accepted shift ${activeShiftName} for business date ${shift.businessDate} by ${user}`);
+
+  broadcastEvent('HANDOVER_ACCEPTED');
+  broadcastEvent('OPERATIONAL_REFRESH');
 
   res.json({
     success: true,
@@ -1540,16 +1745,18 @@ router.post('/handover/close-shift', requireAuth, (req, res) => {
               completed_by = ?,
               completion_note = ?,
               handover_state = 'Completed',
+              current_shift = ?,
+              completed_shift = ?,
               last_updated_by = ?,
               last_updated_at = ?,
               version = version + 1
           WHERE id = ?
-        `).run(now, user, resolution.notes || 'Completed during shift handover', user, now, taskId);
+        `).run(now, user, resolution.notes || 'Completed during shift handover', activeShiftName, activeShiftName, user, now, taskId);
 
         db.prepare(`
           INSERT INTO task_history (task_id, task_code, action, user_name, shift, previous_status, new_status, notes, created_at)
           VALUES (?, ?, 'Completed', ?, ?, ?, 'Completed', ?, ?)
-        `).run(taskId, task.task_code, user, shift.name, task.status, resolution.notes || 'Completed during shift handover', now);
+        `).run(taskId, task.task_code, user, activeShiftName, task.status, resolution.notes || 'Completed during shift handover', now);
       } else if (resolution.disposition === 'Carried Over') {
         carriedOverCount++;
         db.prepare(`
@@ -1633,6 +1840,9 @@ router.post('/handover/close-shift', requireAuth, (req, res) => {
     db.exec('COMMIT;');
 
     logAudit(user, 'Shift Closed & Handover Finalized', 'HANDOVER', String(handoverId), `Closed ${shift.name} shift -> ${shift.nextShift}. Carried: ${carriedOverCount}, Completed: ${totalCompleted}, Blocked: ${blockedCount}`);
+
+    broadcastEvent('HANDOVER_UPDATED');
+    broadcastEvent('OPERATIONAL_REFRESH');
 
     res.json({
       success: true,

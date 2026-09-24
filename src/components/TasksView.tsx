@@ -14,7 +14,8 @@ import {
   Check,
   Lock,
   StickyNote,
-  RotateCw
+  RotateCw,
+  PlayCircle
 } from 'lucide-react';
 import { Task, ShiftInfo, User as UserType, TaskCategory } from '../types';
 import { api } from '../api';
@@ -55,6 +56,38 @@ export const TasksView: React.FC<TasksViewProps> = ({
   const [assignees, setAssignees] = useState<Array<{ id: number; username: string; fullName: string; role: string }>>([]);
   const [showModalStickyNotes, setShowModalStickyNotes] = useState(false);
 
+  // Mid Shift Production COB tasks creation
+  const activeUserShift = currentUser?.selectedShift || shift?.name;
+  const isMidShift = activeUserShift === 'Mid';
+  const [isCreatingProductionCob, setIsCreatingProductionCob] = useState(false);
+  const [cobCreationMessage, setCobCreationMessage] = useState<string | null>(null);
+
+  // Production COB titles and active open tasks check (single-click rule until all 4 are completed)
+  const productionCobTitles = [
+    'Run production Pre-COB Service',
+    'Run Production COB',
+    'Run Production Post COB Service',
+    "Restart Browser JVM's after COB"
+  ];
+  const activeProductionCobTasks = tasks.filter(
+    t => productionCobTitles.includes(t.title) && !['Completed', 'Cancelled'].includes(t.status)
+  );
+  const hasActiveProductionCob = activeProductionCobTasks.length > 0;
+
+  const handleCreateProductionCobTasks = async () => {
+    if (isCreatingProductionCob || hasActiveProductionCob) return;
+    try {
+      setIsCreatingProductionCob(true);
+      const res = await api.createProductionCobTasks();
+      setCobCreationMessage(res.message || 'Successfully created 4 Production COB tasks in sequence.');
+      setTimeout(() => setCobCreationMessage(null), 6000);
+      onTaskCreated();
+    } catch (err: any) {
+      alert(err.message || 'Failed to create Production COB tasks.');
+    } finally {
+      setIsCreatingProductionCob(false);
+    }
+  };
 
   useEffect(() => {
     api.getAssignees()
@@ -153,15 +186,17 @@ export const TasksView: React.FC<TasksViewProps> = ({
   };
 
   const filteredTasks = tasks.filter(t => {
+    const taskEffectiveShift = t.status === 'Completed' ? (t.completed_shift || t.current_shift) : t.current_shift;
+
     // Primary view mode
     if (viewMode === 'ACTIVE' && (t.status === 'Completed' || t.status === 'Cancelled')) return false;
-    if (viewMode === 'CURRENT_SHIFT' && shift && t.current_shift !== shift.name) return false;
+    if (viewMode === 'CURRENT_SHIFT' && shift && taskEffectiveShift !== shift.name) return false;
     if (viewMode === 'CARRIED_OVER' && t.handover_state !== 'Carried Over') return false;
     if (viewMode === 'COMPLETED' && t.status !== 'Completed') return false;
 
     if (statusFilter !== 'All' && t.status !== statusFilter) return false;
     if (priorityFilter !== 'All' && t.priority !== priorityFilter) return false;
-    if (shiftFilter !== 'All' && t.current_shift !== shiftFilter) return false;
+    if (shiftFilter !== 'All' && taskEffectiveShift !== shiftFilter) return false;
     if (categoryFilter !== 'All' && t.category !== categoryFilter) return false;
     if (overdueOnly && !t.isOverdue) return false;
 
@@ -193,26 +228,79 @@ export const TasksView: React.FC<TasksViewProps> = ({
           </p>
         </div>
 
-        {handoverAcknowledged ? (
-          <button
-            id="btn-open-new-task-modal"
-            onClick={handleOpenCreateModal}
-            className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-[#0F4C81] hover:bg-[#16324F] text-white text-xs font-bold shadow-md transition-colors cursor-pointer"
-          >
-            <Plus className="w-4 h-4" />
-            Create New Task
-          </button>
-        ) : (
-          <button
-            disabled
-            title="Shift must be accepted before creating new tasks"
-            className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-slate-200 dark:bg-slate-800 text-slate-400 text-xs font-bold border border-slate-300 dark:border-slate-700 cursor-not-allowed"
-          >
-            <Lock className="w-4 h-4" />
-            Create New Task (Locked)
-          </button>
-        )}
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Exclusively visible to Mid Shift operators: One click only until all 3 COB tasks are closed */}
+          {isMidShift && (
+            <button
+              id="btn-create-production-cob-tasks"
+              onClick={handleCreateProductionCobTasks}
+              disabled={isCreatingProductionCob || !handoverAcknowledged || hasActiveProductionCob}
+              title={
+                hasActiveProductionCob
+                  ? `Production COB tasks in progress (${activeProductionCobTasks.length} pending). Button is locked until all 4 tasks are completed.`
+                  : !handoverAcknowledged
+                  ? 'Shift must be accepted first'
+                  : 'Generate 4 Production COB tasks in sequence'
+              }
+              className={`flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold shadow-md transition-all ${
+                hasActiveProductionCob
+                  ? 'bg-slate-200 dark:bg-slate-800 text-slate-400 dark:text-slate-500 border border-slate-300 dark:border-slate-700 cursor-not-allowed shadow-none'
+                  : !handoverAcknowledged
+                  ? 'bg-slate-300 dark:bg-slate-700 text-white cursor-not-allowed opacity-60'
+                  : 'bg-amber-600 hover:bg-amber-700 text-white cursor-pointer active:scale-98'
+              }`}
+            >
+              {hasActiveProductionCob ? (
+                <>
+                  <Lock className="w-4 h-4 text-slate-400 dark:text-slate-500" />
+                  <span>Create Production COB tasks</span>
+                  <span className="px-1.5 py-0.2 rounded-full bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300 text-[10px] font-mono">
+                    {4 - activeProductionCobTasks.length}/4 Done
+                  </span>
+                </>
+              ) : (
+                <>
+                  <PlayCircle className="w-4 h-4" />
+                  <span>{isCreatingProductionCob ? 'Creating COB Tasks...' : 'Create Production COB tasks'}</span>
+                </>
+              )}
+            </button>
+          )}
+
+          {handoverAcknowledged ? (
+            <button
+              id="btn-open-new-task-modal"
+              onClick={handleOpenCreateModal}
+              className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-[#0F4C81] hover:bg-[#16324F] text-white text-xs font-bold shadow-md transition-colors cursor-pointer"
+            >
+              <Plus className="w-4 h-4" />
+              Create New Task
+            </button>
+          ) : (
+            <button
+              disabled
+              title="Shift must be accepted before creating new tasks"
+              className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-slate-200 dark:bg-slate-800 text-slate-400 text-xs font-bold border border-slate-300 dark:border-slate-700 cursor-not-allowed"
+            >
+              <Lock className="w-4 h-4" />
+              Create New Task (Locked)
+            </button>
+          )}
+        </div>
       </div>
+
+      {/* Production COB Tasks Success Notification Banner */}
+      {cobCreationMessage && (
+        <div className="p-3.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300 text-xs flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+            <span className="font-semibold">{cobCreationMessage}</span>
+          </div>
+          <button onClick={() => setCobCreationMessage(null)} className="text-emerald-600 hover:text-emerald-800 cursor-pointer">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
 
       {/* Shift-Based Sticky Notes (Linked to Shift Date) */}
       <ShiftStickyNotes
@@ -484,8 +572,10 @@ export const TasksView: React.FC<TasksViewProps> = ({
                       {task.status}
                     </span>
                   </td>
-                  <td className="py-3 px-4 text-slate-600 dark:text-slate-300">
-                    {task.current_shift}
+                  <td className="py-3 px-4 text-slate-600 dark:text-slate-300 whitespace-nowrap">
+                    <span className="font-medium">
+                      {task.status === 'Completed' ? (task.completed_shift || task.current_shift) : task.current_shift}
+                    </span>
                   </td>
                   <td className="py-3 px-4 text-slate-600 dark:text-slate-300">
                     {task.status === 'Completed' && (task.completed_by_full_name || task.completed_by) ? (
@@ -574,7 +664,7 @@ export const TasksView: React.FC<TasksViewProps> = ({
             <h4 className="font-bold text-sm text-slate-900 dark:text-white">{task.title}</h4>
 
             <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400 pt-2 border-t border-slate-100 dark:border-slate-700">
-              <span>Shift: {task.current_shift}</span>
+              <span>Shift: {task.status === 'Completed' ? (task.completed_shift || task.current_shift) : task.current_shift}</span>
               <span>By: @{task.created_by}</span>
             </div>
           </div>

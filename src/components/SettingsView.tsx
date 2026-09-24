@@ -41,6 +41,7 @@ import {
 import { User as UserType, AppSettings, AuditLog, TaskCategory } from '../types';
 import { api } from '../api';
 import { BackupRestoreSection } from './BackupRestoreSection';
+import { AuditLogsView } from './AuditLogsView';
 
 interface SettingsViewProps {
   currentUser: UserType;
@@ -362,6 +363,18 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const canManageOperations = currentUser.role === 'ADMIN' || currentUser.role === 'SUPERVISOR';
   const supervisorAllowedTabs: ('users' | 'shifts' | 'categories' | 'audit')[] = ['users', 'shifts', 'categories', 'audit'];
 
+  if (currentUser.role === 'MANAGER') {
+    return (
+      <div className="p-8 max-w-xl mx-auto text-center space-y-4 bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-sm mt-12">
+        <Shield className="w-12 h-12 text-teal-600 mx-auto" />
+        <h3 className="text-lg font-bold text-slate-900 dark:text-white">Administrative Settings Restricted</h3>
+        <p className="text-xs text-slate-500 dark:text-slate-400">
+          Administrative options are restricted for the Manager role. Managers have read-only shift monitoring, filtered searching, note annotation, and audit trail log access.
+        </p>
+      </div>
+    );
+  }
+
   const [subTab, setSubTabState] = useState<'general' | 'totp' | 'email' | 'users' | 'shifts' | 'categories' | 'audit' | 'deployment' | 'backup'>(() => {
     if (typeof window !== 'undefined') {
       const saved = localStorage.getItem('hando_settings_subtab') as any;
@@ -566,14 +579,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [newFullName, setNewFullName] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [newConfirmPassword, setNewConfirmPassword] = useState('');
-  const [newRole, setNewRole] = useState<'ADMIN' | 'SUPERVISOR' | 'USER'>('USER');
+  const [newRole, setNewRole] = useState<'ADMIN' | 'SUPERVISOR' | 'MANAGER' | 'USER'>('USER');
   const [userModalOpen, setUserModalOpen] = useState(false);
 
   // Edit user modal state
   const [editUserModalOpen, setEditUserModalOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<UserType | null>(null);
   const [editFullName, setEditFullName] = useState('');
-  const [editRole, setEditRole] = useState<'ADMIN' | 'SUPERVISOR' | 'USER'>('USER');
+  const [editRole, setEditRole] = useState<'ADMIN' | 'SUPERVISOR' | 'MANAGER' | 'USER'>('USER');
   const [editStatus, setEditStatus] = useState<'ACTIVE' | 'DISABLED'>('ACTIVE');
   const [isEditingUser, setIsEditingUser] = useState(false);
 
@@ -759,7 +772,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         confirmPassword: newConfirmPassword,
         role: currentUser.role === 'SUPERVISOR'
           ? 'USER'
-          : (newRole === 'ADMIN' ? 'ADMIN' : (newRole === 'SUPERVISOR' ? 'SUPERVISOR' : 'USER'))
+          : newRole
       });
       setUserModalOpen(false);
       setNewUsername('');
@@ -781,7 +794,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     }
     setEditingUser(u);
     setEditFullName(u.fullName || (u as any).full_name || '');
-    setEditRole(u.role === 'ADMIN' ? 'ADMIN' : (u.role === 'SUPERVISOR' ? 'SUPERVISOR' : 'USER'));
+    setEditRole((u.role as any) || 'USER');
     setEditStatus((u.status as any) || 'ACTIVE');
     setEditUserModalOpen(true);
     setError(null);
@@ -1544,7 +1557,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                           ? 'bg-rose-100 text-rose-800 dark:bg-rose-950/50 dark:text-rose-300'
                           : u.role === 'SUPERVISOR'
                             ? 'bg-indigo-100 text-indigo-800 dark:bg-indigo-950/50 dark:text-indigo-300'
-                            : 'bg-blue-100 text-blue-800 dark:bg-blue-950/50 dark:text-blue-300'
+                            : u.role === 'MANAGER'
+                              ? 'bg-teal-100 text-teal-800 dark:bg-teal-950/50 dark:text-teal-300'
+                              : 'bg-blue-100 text-blue-800 dark:bg-blue-950/50 dark:text-blue-300'
                       }`}>
                         {u.role}
                       </span>
@@ -1671,6 +1686,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                         className="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
                       >
                         <option value="USER">USER (Operator - Tasks &amp; Shift Handover)</option>
+                        <option value="MANAGER">MANAGER (Observer - Monitor Work, Filters, Add Notes, View Logs)</option>
                         <option value="SUPERVISOR">SUPERVISOR (Elevated - Shifts, Holidays, Users, Categories, Logs)</option>
                         <option value="ADMIN">ADMIN (Full administrative system access)</option>
                       </select>
@@ -1747,6 +1763,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                         className="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
                       >
                         <option value="USER">USER (Operator - Tasks &amp; Shift Handover)</option>
+                        <option value="MANAGER">MANAGER (Observer - Monitor Work, Filters, Add Notes, View Logs)</option>
                         <option value="SUPERVISOR">SUPERVISOR (Elevated - Shifts, Holidays, Users, Categories, Logs)</option>
                         <option value="ADMIN">ADMIN (Full administrative system access)</option>
                       </select>
@@ -3026,249 +3043,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
       {/* TAB 4: AUDIT LOGS */}
       {subTab === 'audit' && (
-        <div className="bg-white dark:bg-[#16324F] rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-xs space-y-4">
-          {/* Header & Export Action */}
-          <div className="p-5 border-b border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-            <div>
-              <div className="flex items-center gap-2">
-                <Shield className="w-5 h-5 text-[#0F4C81] dark:text-blue-400" />
-                <h3 className="font-bold text-base text-slate-900 dark:text-white">Tamper-Evident Audit Trail</h3>
-              </div>
-              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                Permanent accountability records of all ticket creations, status changes, handovers, and user logins.
-              </p>
-            </div>
-
-            <div className="flex items-center gap-3 shrink-0">
-              <span className="text-xs font-semibold px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
-                {auditLogs.length} events
-              </span>
-
-              <button
-                id="btn-export-audit-txt"
-                type="button"
-                disabled={isExportingAudit}
-                onClick={handleExportAuditTxt}
-                className="flex items-center gap-2 px-4 py-2 rounded-xl bg-[#0F4C81] hover:bg-[#16324F] disabled:opacity-50 text-white text-xs font-bold shadow-sm transition-colors cursor-pointer"
-                title="Download audit trail as a formatted .TXT text file"
-              >
-                <Download className="w-4 h-4" />
-                <span>{isExportingAudit ? 'Downloading...' : 'Export as .TXT'}</span>
-              </button>
-            </div>
-          </div>
-
-          {/* Date & User Filtering Panel */}
-          <div className="px-5 py-2">
-            <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/80 space-y-3">
-              {/* Quick Range Presets */}
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400">
-                  <Calendar className="w-3.5 h-3.5 text-[#0F4C81] dark:text-blue-400" />
-                  <span className="font-semibold uppercase tracking-wider text-[10px]">Date Presets:</span>
-                </div>
-                <div className="flex flex-wrap items-center gap-1.5">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const today = new Date().toISOString().split('T')[0];
-                      setAuditFromDate(today);
-                      setAuditToDate(today);
-                      loadFilteredAuditLogs({ fromDate: today, toDate: today });
-                    }}
-                    className="px-2.5 py-1 rounded-md text-[11px] font-semibold bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-600 transition-colors cursor-pointer"
-                  >
-                    Today
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const to = new Date().toISOString().split('T')[0];
-                      const d = new Date();
-                      d.setDate(d.getDate() - 7);
-                      const from = d.toISOString().split('T')[0];
-                      setAuditFromDate(from);
-                      setAuditToDate(to);
-                      loadFilteredAuditLogs({ fromDate: from, toDate: to });
-                    }}
-                    className="px-2.5 py-1 rounded-md text-[11px] font-semibold bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-600 transition-colors cursor-pointer"
-                  >
-                    Last 7 Days
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const to = new Date().toISOString().split('T')[0];
-                      const d = new Date();
-                      d.setDate(d.getDate() - 30);
-                      const from = d.toISOString().split('T')[0];
-                      setAuditFromDate(from);
-                      setAuditToDate(to);
-                      loadFilteredAuditLogs({ fromDate: from, toDate: to });
-                    }}
-                    className="px-2.5 py-1 rounded-md text-[11px] font-semibold bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-600 transition-colors cursor-pointer"
-                  >
-                    Last 30 Days
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setAuditFromDate('');
-                      setAuditToDate('');
-                      setAuditUserFilter('');
-                      setAuditSearchTerm('');
-                      loadFilteredAuditLogs({ fromDate: '', toDate: '', user: '', search: '' });
-                    }}
-                    className="px-2.5 py-1 rounded-md text-[11px] font-semibold text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 transition-colors cursor-pointer"
-                  >
-                    Clear All
-                  </button>
-                </div>
-              </div>
-
-              {/* Form Controls: From Date, To Date, User, Search */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 pt-1">
-                {/* From Date */}
-                <div>
-                  <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1">
-                    From Date:
-                  </label>
-                  <input
-                    id="audit-filter-from-date"
-                    type="date"
-                    value={auditFromDate}
-                    onChange={e => setAuditFromDate(e.target.value)}
-                    className="w-full px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 text-xs focus:ring-2 focus:ring-[#0F4C81] outline-hidden"
-                  />
-                </div>
-
-                {/* To Date */}
-                <div>
-                  <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1">
-                    To Date:
-                  </label>
-                  <input
-                    id="audit-filter-to-date"
-                    type="date"
-                    value={auditToDate}
-                    onChange={e => setAuditToDate(e.target.value)}
-                    className="w-full px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 text-xs focus:ring-2 focus:ring-[#0F4C81] outline-hidden"
-                  />
-                </div>
-
-                {/* User Dropdown */}
-                <div>
-                  <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1">
-                    Operator / User:
-                  </label>
-                  <select
-                    id="audit-filter-user"
-                    value={auditUserFilter}
-                    onChange={e => setAuditUserFilter(e.target.value)}
-                    className="w-full px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 text-xs focus:ring-2 focus:ring-[#0F4C81] outline-hidden cursor-pointer"
-                  >
-                    <option value="">All Users</option>
-                    {users.map(u => (
-                      <option key={u.id} value={u.username}>
-                        @{u.username} ({u.full_name})
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                {/* Search / Action */}
-                <div>
-                  <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1">
-                    Search Details / Action:
-                  </label>
-                  <div className="flex gap-2">
-                    <input
-                      id="audit-filter-search"
-                      type="text"
-                      placeholder="e.g. TASK_CREATE, login..."
-                      value={auditSearchTerm}
-                      onChange={e => setAuditSearchTerm(e.target.value)}
-                      onKeyDown={e => {
-                        if (e.key === 'Enter') {
-                          loadFilteredAuditLogs();
-                        }
-                      }}
-                      className="flex-1 px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 text-xs focus:ring-2 focus:ring-[#0F4C81] outline-hidden"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => loadFilteredAuditLogs()}
-                      disabled={auditLoading}
-                      className="px-3 py-1.5 rounded-lg bg-[#0F4C81] hover:bg-[#16324F] text-white text-xs font-bold transition-colors cursor-pointer disabled:opacity-50 flex items-center gap-1 shrink-0"
-                    >
-                      <Filter className="w-3.5 h-3.5" />
-                      <span>{auditLoading ? '...' : 'Filter'}</span>
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Audit Logs Table */}
-          <div className="overflow-x-auto max-h-[500px] border-t border-slate-200 dark:border-slate-800">
-            {auditLoading ? (
-              <div className="py-16 text-center text-slate-400 text-xs flex flex-col items-center gap-2">
-                <RefreshCw className="w-5 h-5 animate-spin text-[#0F4C81]" />
-                <span>Filtering audit log events...</span>
-              </div>
-            ) : auditLogs.length === 0 ? (
-              <div className="py-16 text-center text-slate-400 text-xs">
-                No audit log records found for the specified date range and filters.
-              </div>
-            ) : (
-              <table className="w-full text-left text-xs">
-                <thead className="bg-slate-50 dark:bg-slate-800/80 text-slate-500 font-semibold uppercase text-[10px] sticky top-0 border-b border-slate-200 dark:border-slate-700">
-                  <tr>
-                    <th className="py-2.5 px-3">Date &amp; Time</th>
-                    <th className="py-2.5 px-3">User</th>
-                    <th className="py-2.5 px-3">Action</th>
-                    <th className="py-2.5 px-3">Entity</th>
-                    <th className="py-2.5 px-3">Details</th>
-                    <th className="py-2.5 px-3">IP Address</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                  {auditLogs.map(log => (
-                    <tr key={log.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/60 transition-colors">
-                      <td className="py-2 px-3 font-mono text-[11px] text-slate-500 whitespace-nowrap">
-                        {new Date(log.created_at).toLocaleString([], {
-                          year: 'numeric',
-                          month: '2-digit',
-                          day: '2-digit',
-                          hour: '2-digit',
-                          minute: '2-digit',
-                          second: '2-digit'
-                        })}
-                      </td>
-                      <td className="py-2 px-3 font-semibold text-slate-800 dark:text-slate-200 whitespace-nowrap">
-                        @{log.user_name}
-                      </td>
-                      <td className="py-2 px-3 font-mono font-bold text-[10px] text-[#0F4C81] dark:text-blue-300 whitespace-nowrap">
-                        <span className="px-1.5 py-0.5 rounded bg-blue-50 dark:bg-blue-950/60 border border-blue-200 dark:border-blue-900/60">
-                          {log.action}
-                        </span>
-                      </td>
-                      <td className="py-2 px-3 text-slate-500 whitespace-nowrap">
-                        {log.entity_type} {log.entity_id ? `#${log.entity_id}` : ''}
-                      </td>
-                      <td className="py-2 px-3 text-slate-600 dark:text-slate-300 max-w-md break-words">
-                        {log.details}
-                      </td>
-                      <td className="py-2 px-3 font-mono text-[10px] text-slate-400 whitespace-nowrap">
-                        {log.ip_address || '—'}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
+        <div className="space-y-4">
+          <AuditLogsView currentUser={currentUser} />
         </div>
       )}
 

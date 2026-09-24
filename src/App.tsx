@@ -11,6 +11,7 @@ import { TasksView } from './components/TasksView';
 import { HandoverView } from './components/HandoverView';
 import { ReportsView } from './components/ReportsView';
 import { SettingsView } from './components/SettingsView';
+import { AuditLogsView } from './components/AuditLogsView';
 import { DailyBriefingSection } from './components/DailyBriefingSection';
 import { TaskDetailModal } from './components/TaskDetailModal';
 import { HandoverEmailModal } from './components/HandoverEmailModal';
@@ -47,17 +48,21 @@ export default function App() {
   const [previousShiftNotes, setPreviousShiftNotes] = useState<string | null>(null);
 
   // Navigation & UI state
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'tasks' | 'handover' | 'reports' | 'settings'>(() => {
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'briefing' | 'tasks' | 'handover' | 'reports' | 'settings' | 'audit'>(() => {
     if (typeof window !== 'undefined') {
       const saved = localStorage.getItem('hando_active_tab') as any;
-      if (['dashboard', 'tasks', 'handover', 'reports', 'settings'].includes(saved)) {
+      if (['dashboard', 'briefing', 'tasks', 'handover', 'reports', 'settings', 'audit'].includes(saved)) {
         return saved;
       }
     }
     return 'dashboard';
   });
 
-  const handleSelectTab = (tab: 'dashboard' | 'tasks' | 'handover' | 'reports' | 'settings') => {
+  const handleSelectTab = (tab: 'dashboard' | 'briefing' | 'tasks' | 'handover' | 'reports' | 'settings' | 'audit') => {
+    if (currentUser?.role === 'MANAGER' && tab === 'settings') {
+      setActiveTab('dashboard');
+      return;
+    }
     setActiveTab(tab);
     if (typeof window !== 'undefined') {
       localStorage.setItem('hando_active_tab', tab);
@@ -437,7 +442,7 @@ export default function App() {
       />
 
       {/* Global Shift Acceptance Alert Banner */}
-      {!handoverAcknowledged && activeTab !== 'handover' && (
+      {!handoverAcknowledged && activeTab !== 'handover' && currentUser?.role !== 'MANAGER' && (
         <div className="max-w-[1600px] w-full mx-auto px-4 sm:px-6 lg:px-8 pt-4">
           <div className="p-4 rounded-xl bg-amber-50 dark:bg-amber-950/50 border border-amber-300 dark:border-amber-700 flex flex-col sm:flex-row items-center justify-between gap-3 shadow-xs">
             <div className="flex items-center gap-3">
@@ -522,7 +527,11 @@ export default function App() {
 
         {activeTab === 'reports' && <ReportsView />}
 
-        {activeTab === 'settings' && (
+        {activeTab === 'audit' && (
+          <AuditLogsView currentUser={currentUser} />
+        )}
+
+        {activeTab === 'settings' && currentUser?.role !== 'MANAGER' && (
           <SettingsView
             currentUser={currentUser}
             onSettingsSaved={handleSettingsSaved}

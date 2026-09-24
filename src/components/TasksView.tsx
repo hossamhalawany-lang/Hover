@@ -15,7 +15,8 @@ import {
   Lock,
   StickyNote,
   RotateCw,
-  PlayCircle
+  PlayCircle,
+  ShieldCheck
 } from 'lucide-react';
 import { Task, ShiftInfo, User as UserType, TaskCategory } from '../types';
 import { api } from '../api';
@@ -229,62 +230,71 @@ export const TasksView: React.FC<TasksViewProps> = ({
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          {/* Exclusively visible to Mid Shift operators: One click only until all 3 COB tasks are closed */}
-          {isMidShift && (
-            <button
-              id="btn-create-production-cob-tasks"
-              onClick={handleCreateProductionCobTasks}
-              disabled={isCreatingProductionCob || !handoverAcknowledged || hasActiveProductionCob}
-              title={
-                hasActiveProductionCob
-                  ? `Production COB tasks in progress (${activeProductionCobTasks.length} pending). Button is locked until all 4 tasks are completed.`
-                  : !handoverAcknowledged
-                  ? 'Shift must be accepted first'
-                  : 'Generate 4 Production COB tasks in sequence'
-              }
-              className={`flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold shadow-md transition-all ${
-                hasActiveProductionCob
-                  ? 'bg-slate-200 dark:bg-slate-800 text-slate-400 dark:text-slate-500 border border-slate-300 dark:border-slate-700 cursor-not-allowed shadow-none'
-                  : !handoverAcknowledged
-                  ? 'bg-slate-300 dark:bg-slate-700 text-white cursor-not-allowed opacity-60'
-                  : 'bg-amber-600 hover:bg-amber-700 text-white cursor-pointer active:scale-98'
-              }`}
-            >
-              {hasActiveProductionCob ? (
-                <>
-                  <Lock className="w-4 h-4 text-slate-400 dark:text-slate-500" />
-                  <span>Create Production COB tasks</span>
-                  <span className="px-1.5 py-0.2 rounded-full bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300 text-[10px] font-mono">
-                    {4 - activeProductionCobTasks.length}/4 Done
-                  </span>
-                </>
-              ) : (
-                <>
-                  <PlayCircle className="w-4 h-4" />
-                  <span>{isCreatingProductionCob ? 'Creating COB Tasks...' : 'Create Production COB tasks'}</span>
-                </>
-              )}
-            </button>
-          )}
-
-          {handoverAcknowledged ? (
-            <button
-              id="btn-open-new-task-modal"
-              onClick={handleOpenCreateModal}
-              className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-[#0F4C81] hover:bg-[#16324F] text-white text-xs font-bold shadow-md transition-colors cursor-pointer"
-            >
-              <Plus className="w-4 h-4" />
-              Create New Task
-            </button>
+          {currentUser?.role === 'MANAGER' ? (
+            <div className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-teal-50 dark:bg-teal-950/40 border border-teal-200 dark:border-teal-800 text-teal-800 dark:text-teal-300 text-xs font-semibold shadow-xs">
+              <ShieldCheck className="w-4 h-4 text-teal-600 dark:text-teal-400 shrink-0" />
+              <span>Manager Mode: Read &amp; Notes Only</span>
+            </div>
           ) : (
-            <button
-              disabled
-              title="Shift must be accepted before creating new tasks"
-              className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-slate-200 dark:bg-slate-800 text-slate-400 text-xs font-bold border border-slate-300 dark:border-slate-700 cursor-not-allowed"
-            >
-              <Lock className="w-4 h-4" />
-              Create New Task (Locked)
-            </button>
+            <>
+              {/* Exclusively visible to Mid Shift operators: One click only until all 3 COB tasks are closed */}
+              {isMidShift && (
+                <button
+                  id="btn-create-production-cob-tasks"
+                  onClick={handleCreateProductionCobTasks}
+                  disabled={isCreatingProductionCob || !handoverAcknowledged || hasActiveProductionCob}
+                  title={
+                    hasActiveProductionCob
+                      ? `Production COB tasks in progress (${activeProductionCobTasks.length} pending). Button is locked until all 4 tasks are completed.`
+                      : !handoverAcknowledged
+                      ? 'Shift must be accepted first'
+                      : 'Generate 4 Production COB tasks in sequence'
+                  }
+                  className={`flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold shadow-md transition-all ${
+                    hasActiveProductionCob
+                      ? 'bg-slate-200 dark:bg-slate-800 text-slate-400 dark:text-slate-500 border border-slate-300 dark:border-slate-700 cursor-not-allowed shadow-none'
+                      : !handoverAcknowledged
+                      ? 'bg-slate-300 dark:bg-slate-700 text-white cursor-not-allowed opacity-60'
+                      : 'bg-amber-600 hover:bg-amber-700 text-white cursor-pointer active:scale-98'
+                  }`}
+                >
+                  {hasActiveProductionCob ? (
+                    <>
+                      <Lock className="w-4 h-4 text-slate-400 dark:text-slate-500" />
+                      <span>Create Production COB tasks</span>
+                      <span className="px-1.5 py-0.2 rounded-full bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300 text-[10px] font-mono">
+                        {4 - activeProductionCobTasks.length}/4 Done
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <PlayCircle className="w-4 h-4" />
+                      <span>{isCreatingProductionCob ? 'Creating COB Tasks...' : 'Create Production COB tasks'}</span>
+                    </>
+                  )}
+                </button>
+              )}
+
+              {handoverAcknowledged ? (
+                <button
+                  id="btn-open-new-task-modal"
+                  onClick={handleOpenCreateModal}
+                  className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-[#0F4C81] hover:bg-[#16324F] text-white text-xs font-bold shadow-md transition-colors cursor-pointer"
+                >
+                  <Plus className="w-4 h-4" />
+                  Create New Task
+                </button>
+              ) : (
+                <button
+                  disabled
+                  title="Shift must be accepted before creating new tasks"
+                  className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-slate-200 dark:bg-slate-800 text-slate-400 text-xs font-bold border border-slate-300 dark:border-slate-700 cursor-not-allowed"
+                >
+                  <Lock className="w-4 h-4" />
+                  Create New Task (Locked)
+                </button>
+              )}
+            </>
           )}
         </div>
       </div>

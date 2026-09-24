@@ -7,7 +7,7 @@ export interface AuthUser {
   username: string;
   full_name: string;
   fullName?: string;
-  role: 'ADMIN' | 'SUPERVISOR' | 'USER';
+  role: 'ADMIN' | 'SUPERVISOR' | 'MANAGER' | 'USER';
   status: 'ACTIVE' | 'DISABLED';
   selectedShift?: 'Morning' | 'Mid' | 'Night' | string;
 }
@@ -169,6 +169,16 @@ export function requireAdmin(req: Request, res: Response, next: NextFunction) {
 export function requireAdminOrSupervisor(req: Request, res: Response, next: NextFunction) {
   if (!req.user || (req.user.role !== 'ADMIN' && req.user.role !== 'SUPERVISOR')) {
     return res.status(403).json({ error: 'Access denied. Administrator or Supervisor privileges required.' });
+  }
+  next();
+}
+
+/**
+ * Guard middleware: User must have ADMIN, SUPERVISOR, or MANAGER role to view audit logs
+ */
+export function requireCanViewAuditLogs(req: Request, res: Response, next: NextFunction) {
+  if (!req.user || !['ADMIN', 'SUPERVISOR', 'MANAGER'].includes(req.user.role)) {
+    return res.status(403).json({ error: 'Access denied. Administrator, Supervisor, or Manager privileges required to view logs.' });
   }
   next();
 }

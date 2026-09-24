@@ -17,7 +17,8 @@ import {
   Info,
   Sparkles,
   PhoneForwarded,
-  Sliders
+  Sliders,
+  ScrollText
 } from 'lucide-react';
 import { User, ShiftInfo } from '../types';
 import { AboutModal } from './AboutModal';
@@ -366,6 +367,21 @@ export const Navbar: React.FC<NavbarProps> = ({
                 <span>Options</span>
               </button>
             )}
+
+            {(user?.role === 'ADMIN' || user?.role === 'MANAGER' || user?.role === 'SUPERVISOR') && (
+              <button
+                id="nav-tab-audit-logs"
+                onClick={() => handleSelectTab('audit')}
+                className={`flex items-center gap-1.5 px-2 xl:px-2.5 py-1.5 rounded-lg text-xs xl:text-sm font-medium transition-colors shrink-0 whitespace-nowrap cursor-pointer ${
+                  activeTab === 'audit' || activeTab === 'logs'
+                    ? 'bg-slate-100 dark:bg-slate-800 text-[#0F4C81] dark:text-blue-400 font-semibold'
+                    : 'text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800/60'
+                }`}
+              >
+                <ScrollText className="w-4 h-4 shrink-0 text-teal-600 dark:text-teal-400" />
+                <span>Audit Logs</span>
+              </button>
+            )}
           </nav>
 
           {/* Action Center & User Menu */}
@@ -472,6 +488,21 @@ export const Navbar: React.FC<NavbarProps> = ({
                       >
                         <Sliders className="w-4 h-4 text-cyan-600 shrink-0" />
                         <span>Operations Options</span>
+                      </button>
+                    )}
+
+                    {(user?.role === 'ADMIN' || user?.role === 'MANAGER' || user?.role === 'SUPERVISOR') && (
+                      <button
+                        type="button"
+                        id="menu-btn-audit-logs"
+                        onClick={() => {
+                          setUserMenuOpen(false);
+                          handleSelectTab('audit');
+                        }}
+                        className="w-full flex items-center gap-2.5 px-4 py-2 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 text-left text-xs font-medium cursor-pointer transition-colors"
+                      >
+                        <ScrollText className="w-4 h-4 text-teal-600 shrink-0" />
+                        <span>Audit Trail Logs</span>
                       </button>
                     )}
 
@@ -604,6 +635,17 @@ export const Navbar: React.FC<NavbarProps> = ({
           >
             <Sliders className="w-4 h-4" />
             <span>Options</span>
+          </button>
+        )}
+        {user?.role === 'MANAGER' && (
+          <button
+            onClick={() => handleSelectTab('audit')}
+            className={`flex flex-col items-center py-1 px-2 rounded ${
+              activeTab === 'audit' || activeTab === 'logs' ? 'text-[#0F4C81] dark:text-blue-400 font-bold' : 'text-slate-600 dark:text-slate-400'
+            }`}
+          >
+            <ScrollText className="w-4 h-4" />
+            <span>Audit Logs</span>
           </button>
         )}
       </div>

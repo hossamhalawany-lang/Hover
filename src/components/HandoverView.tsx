@@ -315,7 +315,19 @@ export const HandoverView: React.FC<HandoverViewProps> = ({
           )}
 
           {/* Transforming Shift Acceptance Banner */}
-          {!currentHandover?.isShiftAccepted && !handoverAcknowledged ? (
+          {currentUser?.role === 'MANAGER' ? (
+            <div className="p-4 rounded-2xl bg-teal-50 dark:bg-teal-950/40 border border-teal-200 dark:border-teal-800 text-teal-900 dark:text-teal-200 flex items-center justify-between gap-3 shadow-xs">
+              <div className="flex items-center gap-3">
+                <ShieldCheck className="w-5 h-5 text-teal-600 dark:text-teal-400 shrink-0" />
+                <div>
+                  <h4 className="font-bold text-sm">Manager Oversight &bull; Shift Handover Monitoring</h4>
+                  <p className="text-xs text-teal-700 dark:text-teal-300 mt-0.5">
+                    Viewing active shift handover and carried over workload. Operational custody acceptance and closure are reserved for duty operators.
+                  </p>
+                </div>
+              </div>
+            </div>
+          ) : !currentHandover?.isShiftAccepted && !handoverAcknowledged ? (
             <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-900 dark:text-amber-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs">
               <div className="flex items-start gap-3">
                 <Lock className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
@@ -714,6 +726,11 @@ export const HandoverView: React.FC<HandoverViewProps> = ({
                 <div className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 text-xs font-semibold border border-emerald-200 dark:border-emerald-800">
                   <CheckCircle2 className="w-4 h-4 text-emerald-600" />
                   <span>Shift Closed &bull; Pending {shift?.nextShift} Receipt</span>
+                </div>
+              ) : currentUser?.role === 'MANAGER' ? (
+                <div className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-teal-50 dark:bg-teal-950/40 text-teal-800 dark:text-teal-300 text-xs font-semibold border border-teal-200 dark:border-teal-800">
+                  <ShieldCheck className="w-4 h-4 text-teal-600 dark:text-teal-400" />
+                  <span>Manager Mode: Read-only Shift Oversight</span>
                 </div>
               ) : (currentHandover?.isShiftAccepted || handoverAcknowledged) ? (
                 <button

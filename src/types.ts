@@ -1,4 +1,4 @@
-export type UserRole = 'ADMIN' | 'SUPERVISOR' | 'USER';
+export type UserRole = 'ADMIN' | 'SUPERVISOR' | 'MANAGER' | 'USER';
 export type UserStatus = 'ACTIVE' | 'DISABLED';
 
 export interface User {
@@ -115,6 +115,9 @@ export interface Handover {
   }>;
 }
 
+export type AuditSeverity = 'INFO' | 'WARNING' | 'CRITICAL';
+export type AuditCategory = 'SECURITY' | 'TASKS' | 'SHIFTS' | 'SYSTEM';
+
 export interface AuditLog {
   id: number;
   created_at: string;
@@ -124,6 +127,17 @@ export interface AuditLog {
   entity_id?: string | null;
   details?: string | null;
   ip_address?: string | null;
+  severity?: AuditSeverity;
+  category?: AuditCategory;
+}
+
+export interface AuditStats {
+  total: number;
+  criticalCount: number;
+  warningCount: number;
+  infoCount: number;
+  securityCount: number;
+  todayCount: number;
 }
 
 export interface SystemSettings {

@@ -394,35 +394,45 @@ export const api = {
     });
   },
 
-  async getAuditLogs(params: { user?: string; action?: string; search?: string; fromDate?: string; toDate?: string } = {}): Promise<AuditLog[]> {
+  async getAuditLogs(params: { user?: string; action?: string; search?: string; fromDate?: string; toDate?: string; severity?: string; category?: string } = {}): Promise<AuditLog[]> {
     const query = new URLSearchParams();
     if (params.user) query.set('user', params.user);
     if (params.action) query.set('action', params.action);
     if (params.search) query.set('search', params.search);
     if (params.fromDate) query.set('fromDate', params.fromDate);
     if (params.toDate) query.set('toDate', params.toDate);
+    if (params.severity) query.set('severity', params.severity);
+    if (params.category) query.set('category', params.category);
     return request(`/api/audit-logs?${query.toString()}`);
   },
 
-  getAuditLogsExportTxtUrl(params: { user?: string; action?: string; search?: string; fromDate?: string; toDate?: string } = {}): string {
+  async getAuditStats(): Promise<{ total: number; criticalCount: number; warningCount: number; infoCount: number; securityCount: number; todayCount: number }> {
+    return request('/api/audit-logs/stats');
+  },
+
+  getAuditLogsExportTxtUrl(params: { user?: string; action?: string; search?: string; fromDate?: string; toDate?: string; severity?: string; category?: string } = {}): string {
     const query = new URLSearchParams();
     if (params.user) query.set('user', params.user);
     if (params.action) query.set('action', params.action);
     if (params.search) query.set('search', params.search);
     if (params.fromDate) query.set('fromDate', params.fromDate);
     if (params.toDate) query.set('toDate', params.toDate);
+    if (params.severity) query.set('severity', params.severity);
+    if (params.category) query.set('category', params.category);
     const token = getStoredToken();
     if (token) query.set('token', token);
     return `/api/audit-logs/export-txt?${query.toString()}`;
   },
 
-  async downloadAuditLogsTxt(params: { user?: string; action?: string; search?: string; fromDate?: string; toDate?: string } = {}): Promise<void> {
+  async downloadAuditLogsTxt(params: { user?: string; action?: string; search?: string; fromDate?: string; toDate?: string; severity?: string; category?: string } = {}): Promise<void> {
     const query = new URLSearchParams();
     if (params.user) query.set('user', params.user);
     if (params.action) query.set('action', params.action);
     if (params.search) query.set('search', params.search);
     if (params.fromDate) query.set('fromDate', params.fromDate);
     if (params.toDate) query.set('toDate', params.toDate);
+    if (params.severity) query.set('severity', params.severity);
+    if (params.category) query.set('category', params.category);
     const token = getStoredToken();
     if (token) query.set('token', token);
 
@@ -451,6 +461,63 @@ export const api = {
     const a = document.createElement('a');
     a.href = downloadUrl;
     a.download = `audit_logs_${params.fromDate || 'start'}_to_${params.toDate || 'latest'}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    window.URL.revokeObjectURL(downloadUrl);
+  },
+
+  getAuditLogsExportCsvUrl(params: { user?: string; action?: string; search?: string; fromDate?: string; toDate?: string; severity?: string; category?: string } = {}): string {
+    const query = new URLSearchParams();
+    if (params.user) query.set('user', params.user);
+    if (params.action) query.set('action', params.action);
+    if (params.search) query.set('search', params.search);
+    if (params.fromDate) query.set('fromDate', params.fromDate);
+    if (params.toDate) query.set('toDate', params.toDate);
+    if (params.severity) query.set('severity', params.severity);
+    if (params.category) query.set('category', params.category);
+    const token = getStoredToken();
+    if (token) query.set('token', token);
+    return `/api/audit-logs/export-csv?${query.toString()}`;
+  },
+
+  async downloadAuditLogsCsv(params: { user?: string; action?: string; search?: string; fromDate?: string; toDate?: string; severity?: string; category?: string } = {}): Promise<void> {
+    const query = new URLSearchParams();
+    if (params.user) query.set('user', params.user);
+    if (params.action) query.set('action', params.action);
+    if (params.search) query.set('search', params.search);
+    if (params.fromDate) query.set('fromDate', params.fromDate);
+    if (params.toDate) query.set('toDate', params.toDate);
+    if (params.severity) query.set('severity', params.severity);
+    if (params.category) query.set('category', params.category);
+    const token = getStoredToken();
+    if (token) query.set('token', token);
+
+    const headers: Record<string, string> = {};
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+      headers['x-session-token'] = token;
+    }
+
+    const res = await fetch(`/api/audit-logs/export-csv?${query.toString()}`, {
+      method: 'GET',
+      headers
+    });
+
+    if (!res.ok) {
+      let errMessage = `Export failed with status: ${res.statusText || res.status}`;
+      try {
+        const errJson = await res.json();
+        if (errJson?.error) errMessage = errJson.error;
+      } catch {}
+      throw new Error(errMessage);
+    }
+
+    const blob = await res.blob();
+    const downloadUrl = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = downloadUrl;
+    a.download = `audit_logs_${params.fromDate || 'start'}_to_${params.toDate || 'latest'}.csv`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);

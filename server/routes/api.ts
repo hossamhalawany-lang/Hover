@@ -11,6 +11,7 @@ import {
   requireAuth,
   requireAdmin,
   requireAdminOrSupervisor,
+  requireCanViewAuditLogs,
   isLastActiveAdmin
 } from '../auth.ts';
 import { seedDemoScenario } from '../demo.ts';
@@ -672,6 +673,10 @@ router.get('/tasks/:id', requireAuth, (req, res) => {
 });
 
 router.post('/tasks', requireAuth, (req, res) => {
+  if (req.user?.role === 'MANAGER') {
+    return res.status(403).json({ error: 'Permission denied: Manager role has read-only observer access and cannot create tasks.' });
+  }
+
   const { title, description, priority, category, assignedUser, dueDate, is_cob, isCob, cob_count, cobCount } = req.body;
   if (!title || !title.trim()) {
     return res.status(400).json({ error: 'Task title is required.' });
@@ -744,6 +749,10 @@ router.post('/tasks', requireAuth, (req, res) => {
 // 2. Run Production COB
 // 3. Run Production Post COB Service
 router.post('/tasks/create-production-cob-tasks', requireAuth, (req, res) => {
+  if (req.user?.role === 'MANAGER') {
+    return res.status(403).json({ error: 'Permission denied: Manager role has read-only observer access and cannot create tasks.' });
+  }
+
   const activeShiftName = (req.user?.selectedShift && ['Morning', 'Mid', 'Night', '24H On-Call'].includes(req.user.selectedShift))
     ? req.user.selectedShift
     : getCurrentShift().name;
@@ -831,6 +840,10 @@ router.post('/tasks/create-production-cob-tasks', requireAuth, (req, res) => {
 
 // Update task metadata with Optimistic Concurrency check (Section 36)
 router.put('/tasks/:id', requireAuth, (req, res) => {
+  if (req.user?.role === 'MANAGER') {
+    return res.status(403).json({ error: 'Permission denied: Manager role has read-only observer access and cannot modify task details.' });
+  }
+
   const { title, description, priority, category, assignedUser, dueDate, version, is_cob, isCob, cob_count, cobCount } = req.body;
   const taskId = req.params.id;
 
@@ -863,6 +876,13 @@ router.put('/tasks/:id', requireAuth, (req, res) => {
   let newIsCob = task.is_cob !== undefined ? task.is_cob : 0;
   let newCobCount = task.cob_count !== undefined ? task.cob_count : null;
 
+  const validPriorities = ['Critical', 'High', 'Medium', 'Low'];
+  let updatedPriority = task.priority;
+  if (priority) {
+    const match = validPriorities.find(p => p.toLowerCase() === String(priority).toLowerCase());
+    if (match) updatedPriority = match;
+  }
+
   if (isCobParam !== undefined) {
     newIsCob = Boolean(isCobParam) ? 1 : 0;
     if (newIsCob) {
@@ -883,7 +903,7 @@ router.put('/tasks/:id', requireAuth, (req, res) => {
   `).run(
     title || task.title,
     description !== undefined ? description : task.description,
-    priority || task.priority,
+    updatedPriority,
     category || task.category,
     assignedUser !== undefined ? assignedUser : task.assigned_user,
     dueDate !== undefined ? dueDate : task.due_date,
@@ -900,7 +920,43 @@ router.put('/tasks/:id', requireAuth, (req, res) => {
     VALUES (?, ?, 'Updated', ?, ?, 'Task details updated', ?)
   `).run(task.id, task.task_code, req.user!.username, shift.name, now);
 
-  logAudit(req.user!.username, 'Task Updated', 'TASK', task.task_code, `Updated task metadata`);
+  // Compute field-level diffs for audit trail
+  const changes: string[] = [];
+  if (title && title !== task.title) changes.push(`Title: "${task.title}" -> "${title}"`);
+  if (priority && priority !== task.priority) changes.push(`Priority: ${task.priority} -> ${priority}`);
+  if (category && category !== task.category) changes.push(`Category: ${task.category} -> ${category}`);
+  if (assignedUser !== undefined && assignedUser !== task.assigned_user) {
+    changes.push(`Assignee: ${task.assigned_user || 'Unassigned'} -> ${assignedUser || 'Unassigned'}`);
+  }
+  if (dueDate !== undefined && dueDate !== task.due_date) {
+    changes.push(`Due Date: ${task.due_date || 'None'} -> ${dueDate || 'None'}`);
+  }
+  if (description !== undefined && description !== task.description) {
+    changes.push('Description modified');
+  }
+  if (newIsCob !== task.is_cob) {
+    changes.push(`COB: ${task.is_cob ? 'Active' : 'Inactive'} -> ${newIsCob ? 'Active' : 'Inactive'}`);
+  }
+  if (newCobCount !== task.cob_count && newIsCob) {
+    changes.push(`COB Count: ${task.cob_count || 1} -> ${newCobCount}`);
+  }
+
+  const diffSummary = changes.length > 0 ? changes.join('; ') : 'Updated task metadata';
+  const diffSeverity = (
+    (updatedPriority && updatedPriority.toLowerCase() === 'critical') ||
+    (updatedPriority && updatedPriority !== task.priority && updatedPriority.toLowerCase() === 'high')
+  ) ? 'WARNING' : 'INFO';
+
+  logAudit(
+    req.user!.username,
+    'Task Updated',
+    'TASK',
+    task.task_code,
+    diffSummary,
+    req.ip || req.socket.remoteAddress || '127.0.0.1',
+    diffSeverity,
+    'TASKS'
+  );
 
   const updated = db.prepare('SELECT * FROM tasks WHERE id = ?').get(taskId);
   res.json(updated);
@@ -916,8 +972,15 @@ router.post('/tasks/:id/status', requireAuth, (req, res) => {
     return res.status(404).json({ error: 'Task not found.' });
   }
 
-  // Handover lock check
-  if (isTaskHandoverLocked(task, req.user)) {
+  // Manager permission: Managers can ONLY append notes, cannot modify task status
+  if (req.user?.role === 'MANAGER' && action !== 'ADD_NOTE') {
+    return res.status(403).json({
+      error: 'Permission denied: Manager role has observer status with note annotation access only. Cannot change task status.'
+    });
+  }
+
+  // Handover lock check (exempt ADD_NOTE)
+  if (action !== 'ADD_NOTE' && isTaskHandoverLocked(task, req.user)) {
     return res.status(423).json({
       error: 'This task is locked because the shift handover is pending acknowledgment.'
     });
@@ -1531,6 +1594,10 @@ router.get('/handover/current', requireAuth, (req, res) => {
 
 // Acknowledge handover & accept shift by duty operator
 router.post('/handover/acknowledge', requireAuth, (req, res) => {
+  if (req.user?.role === 'MANAGER') {
+    return res.status(403).json({ error: 'Permission denied: Manager role has observer status and does not accept shifts.' });
+  }
+
   const { handoverId, overridePrecedingUnclosed } = req.body;
   const currentShift = getCurrentShift();
   const activeShiftName = (req.user?.selectedShift && ['Morning', 'Mid', 'Night', '24H On-Call'].includes(req.user.selectedShift))
@@ -1658,6 +1725,10 @@ router.get('/handover/validate-closure', requireAuth, (req, res) => {
 
 // Close shift & finalize handover
 router.post('/handover/close-shift', requireAuth, (req, res) => {
+  if (req.user?.role === 'MANAGER') {
+    return res.status(403).json({ error: 'Permission denied: Manager role has observer status and cannot execute shift handover closure.' });
+  }
+
   const { resolutions, generalNotes } = req.body;
 
   const activeShiftName = (req.user?.selectedShift && ['Morning', 'Mid', 'Night', '24H On-Call'].includes(req.user.selectedShift))
@@ -2331,8 +2402,8 @@ router.get('/reports/csv', (req, res) => {
    7. AUDIT LOGS (Section 40)
    ========================================================================= */
 
-router.get('/audit-logs', requireAdminOrSupervisor, (req, res) => {
-  const { user, action, search, fromDate, toDate } = req.query;
+router.get('/audit-logs', requireCanViewAuditLogs, (req, res) => {
+  const { user, action, search, fromDate, toDate, severity, category } = req.query;
   let query = 'SELECT * FROM audit_logs WHERE 1=1';
   const params: any[] = [];
 
@@ -2346,6 +2417,16 @@ router.get('/audit-logs', requireAdminOrSupervisor, (req, res) => {
     params.push(`%${action}%`);
   }
 
+  if (severity && severity !== 'ALL') {
+    query += ' AND severity = ?';
+    params.push(severity);
+  }
+
+  if (category && category !== 'ALL') {
+    query += ' AND category = ?';
+    params.push(category);
+  }
+
   if (fromDate) {
     query += ' AND date(created_at) >= date(?)';
     params.push(fromDate);
@@ -2357,9 +2438,9 @@ router.get('/audit-logs', requireAdminOrSupervisor, (req, res) => {
   }
 
   if (search) {
-    query += ' AND (details LIKE ? OR entity_id LIKE ? OR user_name LIKE ?)';
+    query += ' AND (details LIKE ? OR entity_id LIKE ? OR user_name LIKE ? OR action LIKE ?)';
     const term = `%${search}%`;
-    params.push(term, term, term);
+    params.push(term, term, term, term);
   }
 
   query += ' ORDER BY id DESC LIMIT 500';
@@ -2368,8 +2449,30 @@ router.get('/audit-logs', requireAdminOrSupervisor, (req, res) => {
   res.json(logs);
 });
 
-router.get('/audit-logs/export-txt', requireAuth, (req: any, res) => {
-  const { user, action, search, fromDate, toDate } = req.query;
+router.get('/audit-logs/stats', requireCanViewAuditLogs, (req, res) => {
+  try {
+    const totalRow = db.prepare('SELECT COUNT(*) as c FROM audit_logs').get() as { c: number };
+    const criticalRow = db.prepare("SELECT COUNT(*) as c FROM audit_logs WHERE severity = 'CRITICAL'").get() as { c: number };
+    const warningRow = db.prepare("SELECT COUNT(*) as c FROM audit_logs WHERE severity = 'WARNING'").get() as { c: number };
+    const infoRow = db.prepare("SELECT COUNT(*) as c FROM audit_logs WHERE severity = 'INFO'").get() as { c: number };
+    const securityRow = db.prepare("SELECT COUNT(*) as c FROM audit_logs WHERE category = 'SECURITY'").get() as { c: number };
+    const todayRow = db.prepare("SELECT COUNT(*) as c FROM audit_logs WHERE date(created_at) = date('now')").get() as { c: number };
+
+    res.json({
+      total: totalRow?.c || 0,
+      criticalCount: criticalRow?.c || 0,
+      warningCount: warningRow?.c || 0,
+      infoCount: infoRow?.c || 0,
+      securityCount: securityRow?.c || 0,
+      todayCount: todayRow?.c || 0
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/audit-logs/export-csv', requireAuth, (req: any, res) => {
+  const { user, action, search, fromDate, toDate, severity, category } = req.query;
   let query = 'SELECT * FROM audit_logs WHERE 1=1';
   const params: any[] = [];
 
@@ -2383,6 +2486,16 @@ router.get('/audit-logs/export-txt', requireAuth, (req: any, res) => {
     params.push(`%${action}%`);
   }
 
+  if (severity && severity !== 'ALL') {
+    query += ' AND severity = ?';
+    params.push(severity);
+  }
+
+  if (category && category !== 'ALL') {
+    query += ' AND category = ?';
+    params.push(category);
+  }
+
   if (fromDate) {
     query += ' AND date(created_at) >= date(?)';
     params.push(fromDate);
@@ -2394,9 +2507,88 @@ router.get('/audit-logs/export-txt', requireAuth, (req: any, res) => {
   }
 
   if (search) {
-    query += ' AND (details LIKE ? OR entity_id LIKE ? OR user_name LIKE ?)';
+    query += ' AND (details LIKE ? OR entity_id LIKE ? OR user_name LIKE ? OR action LIKE ?)';
     const term = `%${search}%`;
-    params.push(term, term, term);
+    params.push(term, term, term, term);
+  }
+
+  query += ' ORDER BY id DESC LIMIT 5000';
+
+  const logs = db.prepare(query).all(...params) as any[];
+
+  try {
+    logAudit(req.user?.username || 'user', 'Exported Audit Trail CSV', 'AUDIT_LOGS', null, `Exported ${logs.length} audit trail log records as CSV`);
+  } catch {}
+
+  const escapeCsv = (val: any) => {
+    if (val === null || val === undefined) return '""';
+    const str = String(val).replace(/"/g, '""');
+    return `"${str}"`;
+  };
+
+  const headers = ['ID', 'Timestamp (UTC)', 'Severity', 'Category', 'User', 'Action', 'Entity Type', 'Entity ID', 'Details', 'IP Address'];
+  const rows = [headers.join(',')];
+
+  for (const log of logs) {
+    rows.push([
+      escapeCsv(log.id),
+      escapeCsv(log.created_at),
+      escapeCsv(log.severity || 'INFO'),
+      escapeCsv(log.category || 'TASKS'),
+      escapeCsv(log.user_name),
+      escapeCsv(log.action),
+      escapeCsv(log.entity_type),
+      escapeCsv(log.entity_id || ''),
+      escapeCsv(log.details || ''),
+      escapeCsv(log.ip_address || '127.0.0.1')
+    ].join(','));
+  }
+
+  const fileName = `audit_logs_${fromDate || 'start'}_to_${toDate || 'latest'}.csv`;
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+  res.send(rows.join('\r\n'));
+});
+
+router.get('/audit-logs/export-txt', requireAuth, (req: any, res) => {
+  const { user, action, search, fromDate, toDate, severity, category } = req.query;
+  let query = 'SELECT * FROM audit_logs WHERE 1=1';
+  const params: any[] = [];
+
+  if (user) {
+    query += ' AND user_name = ?';
+    params.push(user);
+  }
+
+  if (action) {
+    query += ' AND action LIKE ?';
+    params.push(`%${action}%`);
+  }
+
+  if (severity && severity !== 'ALL') {
+    query += ' AND severity = ?';
+    params.push(severity);
+  }
+
+  if (category && category !== 'ALL') {
+    query += ' AND category = ?';
+    params.push(category);
+  }
+
+  if (fromDate) {
+    query += ' AND date(created_at) >= date(?)';
+    params.push(fromDate);
+  }
+
+  if (toDate) {
+    query += ' AND date(created_at) <= date(?)';
+    params.push(toDate);
+  }
+
+  if (search) {
+    query += ' AND (details LIKE ? OR entity_id LIKE ? OR user_name LIKE ? OR action LIKE ?)';
+    const term = `%${search}%`;
+    params.push(term, term, term, term);
   }
 
   query += ' ORDER BY id DESC';
@@ -2414,6 +2606,8 @@ router.get('/audit-logs/export-txt', requireAuth, (req: any, res) => {
   text += `Generated At : ${now}\r\n`;
   text += `Exported By  : @${req.user?.username || 'admin'}\r\n`;
   text += `Date Filter  : From [${fromDate || 'Beginning'}] To [${toDate || 'Latest'}]\r\n`;
+  if (severity) text += `Severity     : ${severity}\r\n`;
+  if (category) text += `Category     : ${category}\r\n`;
   if (user) text += `User Filter  : @${user}\r\n`;
   if (action) text += `Action Filter: ${action}\r\n`;
   if (search) text += `Search Query : ${search}\r\n`;
@@ -2424,7 +2618,7 @@ router.get('/audit-logs/export-txt', requireAuth, (req: any, res) => {
     text += 'No audit log events found matching the specified filter criteria.\r\n';
   } else {
     for (const log of logs) {
-      text += `[${log.created_at}] EVENT #${log.id} | USER: @${log.user_name}\r\n`;
+      text += `[${log.created_at}] EVENT #${log.id} [${log.severity || 'INFO'}] [${log.category || 'TASKS'}] | USER: @${log.user_name}\r\n`;
       text += `  ACTION : ${log.action}\r\n`;
       text += `  ENTITY : ${log.entity_type}${log.entity_id ? ` (#${log.entity_id})` : ''}\r\n`;
       text += `  DETAILS: ${log.details || 'N/A'}\r\n`;
@@ -2581,10 +2775,10 @@ router.post('/users', requireAdminOrSupervisor, (req, res) => {
   }
 
   const now = new Date().toISOString();
-  // Supervisor can only create standard USER accounts; Admin can create ADMIN, SUPERVISOR, or USER
+  // Supervisor can only create standard USER accounts; Admin can create ADMIN, SUPERVISOR, MANAGER, or USER
   const userRole = req.user!.role === 'SUPERVISOR'
     ? 'USER'
-    : (role === 'ADMIN' ? 'ADMIN' : (role === 'SUPERVISOR' ? 'SUPERVISOR' : 'USER'));
+    : (['ADMIN', 'SUPERVISOR', 'MANAGER', 'USER'].includes(role) ? role : 'USER');
   const hash = hashPassword(targetPassword);
 
   const result = db.prepare(`
@@ -2613,15 +2807,15 @@ router.put('/users/:id', requireAdminOrSupervisor, (req, res) => {
         error: 'Permission denied: Supervisors cannot modify Administrator accounts.'
       });
     }
-    if (role === 'ADMIN' || role === 'SUPERVISOR') {
+    if (role === 'ADMIN' || role === 'SUPERVISOR' || role === 'MANAGER') {
       return res.status(403).json({
-        error: 'Permission denied: Supervisors cannot assign Administrator or Supervisor privileges.'
+        error: 'Permission denied: Supervisors cannot assign Administrator, Supervisor, or Manager privileges.'
       });
     }
   }
 
   // Section 8: Admin Safety Rule - NEVER disable or demote the last active admin!
-  if (targetUser.role === 'ADMIN' && (status === 'DISABLED' || role === 'USER' || role === 'SUPERVISOR')) {
+  if (targetUser.role === 'ADMIN' && (status === 'DISABLED' || ['USER', 'SUPERVISOR', 'MANAGER'].includes(role))) {
     if (isLastActiveAdmin(userId)) {
       return res.status(400).json({
         error: 'Safety Rule Violation: Cannot disable or demote the last active Administrator account. Create another active Administrator first.'

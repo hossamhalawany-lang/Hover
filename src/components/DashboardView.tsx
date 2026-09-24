@@ -664,24 +664,26 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               />
             </div>
 
-            {handoverAcknowledged ? (
-              <button
-                id="btn-create-task-dashboard"
-                onClick={onNewTask}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#0F4C81] hover:bg-[#16324F] text-white text-xs font-bold shadow-xs transition-colors cursor-pointer"
-              >
-                <Plus className="w-3.5 h-3.5" />
-                New Task
-              </button>
-            ) : (
-              <button
-                disabled
-                title="Shift must be accepted before creating new tasks"
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-200 dark:bg-slate-800 text-slate-400 text-xs font-semibold cursor-not-allowed border border-slate-300 dark:border-slate-700"
-              >
-                <Lock className="w-3.5 h-3.5" />
-                New Task (Locked)
-              </button>
+            {currentUser?.role !== 'MANAGER' && (
+              handoverAcknowledged ? (
+                <button
+                  id="btn-create-task-dashboard"
+                  onClick={onNewTask}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#0F4C81] hover:bg-[#16324F] text-white text-xs font-bold shadow-xs transition-colors cursor-pointer"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  New Task
+                </button>
+              ) : (
+                <button
+                  disabled
+                  title="Shift must be accepted before creating new tasks"
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-200 dark:bg-slate-800 text-slate-400 text-xs font-semibold cursor-not-allowed border border-slate-300 dark:border-slate-700"
+                >
+                  <Lock className="w-3.5 h-3.5" />
+                  New Task (Locked)
+                </button>
+              )
             )}
           </div>
         </div>

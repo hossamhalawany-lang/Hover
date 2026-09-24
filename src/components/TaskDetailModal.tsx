@@ -16,7 +16,8 @@ import {
   Send,
   Lock,
   Pencil,
-  RotateCw
+  RotateCw,
+  ShieldCheck
 } from 'lucide-react';
 import { Task, TaskHistoryItem, User as UserType, ShiftInfo } from '../types';
 import { api } from '../api';
@@ -254,7 +255,7 @@ export const TaskDetailModal: React.FC<TaskDetailModalProps> = ({
             <div className="text-xs text-slate-500 dark:text-slate-400">
               Revision / Version: <span className="font-semibold text-slate-700 dark:text-slate-200">v{task?.version || 1}</span>
             </div>
-            {task && !isEditing && task.status !== 'Completed' && task.status !== 'Cancelled' && (
+            {task && !isEditing && task.status !== 'Completed' && task.status !== 'Cancelled' && currentUser?.role !== 'MANAGER' && (
               <button
                 type="button"
                 id="edit-task-button"
@@ -716,7 +717,26 @@ export const TaskDetailModal: React.FC<TaskDetailModalProps> = ({
               {/* Action Buttons Bar */}
               {!activeAction && (
                 <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-200 dark:border-slate-800">
-                  {(task.isHandoverLocked || !handoverAcknowledged) ? (
+                  {currentUser?.role === 'MANAGER' ? (
+                    <div className="w-full flex items-center justify-between gap-3 p-3.5 rounded-xl bg-teal-50 dark:bg-teal-950/40 border border-teal-200 dark:border-teal-800">
+                      <div className="flex items-center gap-2 text-xs text-teal-800 dark:text-teal-300">
+                        <ShieldCheck className="w-4 h-4 text-teal-600 dark:text-teal-400 shrink-0" />
+                        <span>Manager Observer: Status changes and cancellations are restricted. You can append operational notes.</span>
+                      </div>
+                      <button
+                        type="button"
+                        id="btn-manager-add-note"
+                        onClick={() => {
+                          setActiveAction('ADD_NOTE');
+                          setActionNotes('');
+                        }}
+                        className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-teal-600 hover:bg-teal-700 text-white text-xs font-bold transition-colors cursor-pointer shrink-0 shadow-xs"
+                      >
+                        <MessageSquare className="w-3.5 h-3.5" />
+                        <span>Add Note</span>
+                      </button>
+                    </div>
+                  ) : (task.isHandoverLocked || !handoverAcknowledged) ? (
                     <div className="w-full p-3.5 rounded-xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 text-xs text-amber-800 dark:text-amber-300 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                       <span className="flex items-center gap-2 font-semibold">
                         <Lock className="w-4 h-4 text-amber-600 shrink-0" />

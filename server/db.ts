@@ -44,7 +44,7 @@ export function initDatabase() {
       username TEXT UNIQUE NOT NULL,
       password_hash TEXT NOT NULL,
       full_name TEXT NOT NULL,
-      role TEXT NOT NULL CHECK (role IN ('ADMIN', 'SUPERVISOR', 'USER')),
+      role TEXT NOT NULL CHECK (role IN ('ADMIN', 'SUPERVISOR', 'MANAGER', 'USER')),
       status TEXT NOT NULL CHECK (status IN ('ACTIVE', 'DISABLED')) DEFAULT 'ACTIVE',
       last_login_at TEXT,
       created_at TEXT NOT NULL,
@@ -138,7 +138,9 @@ export function initDatabase() {
       entity_type TEXT NOT NULL,
       entity_id TEXT,
       details TEXT,
-      ip_address TEXT
+      ip_address TEXT,
+      severity TEXT NOT NULL DEFAULT 'INFO',
+      category TEXT NOT NULL DEFAULT 'TASKS'
     );
 
     CREATE TABLE IF NOT EXISTS categories (
@@ -192,6 +194,20 @@ export function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at);
     CREATE INDEX IF NOT EXISTS idx_shift_notes_date ON shift_notes(shift_date);
   `);
+
+  // Ensure severity and category exist on audit_logs
+  try {
+    db.exec("ALTER TABLE audit_logs ADD COLUMN severity TEXT NOT NULL DEFAULT 'INFO';");
+  } catch {}
+  try {
+    db.exec("ALTER TABLE audit_logs ADD COLUMN category TEXT NOT NULL DEFAULT 'TASKS';");
+  } catch {}
+
+  // Create audit_logs indexes after columns exist
+  try {
+    db.exec('CREATE INDEX IF NOT EXISTS idx_audit_severity ON audit_logs(severity);');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_audit_category ON audit_logs(category);');
+  } catch {}
 
   // Ensure selected_shift column exists if table was created previously
   try {
@@ -255,10 +271,10 @@ export function initDatabase() {
     // Ignore error if column already exists
   }
 
-  // Ensure users table allows 'SUPERVISOR' in CHECK constraint
+  // Ensure users table allows 'SUPERVISOR' and 'MANAGER' in CHECK constraint
   try {
     const usersTableInfo = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='users'").get() as { sql: string } | undefined;
-    if (usersTableInfo?.sql && !usersTableInfo.sql.includes('SUPERVISOR')) {
+    if (usersTableInfo?.sql && (!usersTableInfo.sql.includes('SUPERVISOR') || !usersTableInfo.sql.includes('MANAGER'))) {
       db.exec(`
         PRAGMA foreign_keys = OFF;
         CREATE TABLE users_migrated (
@@ -266,7 +282,7 @@ export function initDatabase() {
           username TEXT UNIQUE NOT NULL,
           password_hash TEXT NOT NULL,
           full_name TEXT NOT NULL,
-          role TEXT NOT NULL CHECK (role IN ('ADMIN', 'SUPERVISOR', 'USER')),
+          role TEXT NOT NULL CHECK (role IN ('ADMIN', 'SUPERVISOR', 'MANAGER', 'USER')),
           status TEXT NOT NULL CHECK (status IN ('ACTIVE', 'DISABLED')) DEFAULT 'ACTIVE',
           last_login_at TEXT,
           created_at TEXT NOT NULL,
@@ -281,7 +297,7 @@ export function initDatabase() {
       `);
     }
   } catch (migErr) {
-    console.error('Migration for users table SUPERVISOR check constraint:', migErr);
+    console.error('Migration for users table role check constraint:', migErr);
   }
 
   // Ensure recovery columns exist on settings table
@@ -412,7 +428,7 @@ export function initDatabase() {
   }
 
   // Helper to safely seed or ensure an active user exists
-  const ensureUser = (username: string, defaultPass: string, fullName: string, role: 'ADMIN' | 'USER', email?: string) => {
+  const ensureUser = (username: string, defaultPass: string, fullName: string, role: 'ADMIN' | 'SUPERVISOR' | 'MANAGER' | 'USER', email?: string) => {
     try {
       const existing = db.prepare('SELECT id, status, password_hash FROM users WHERE LOWER(username) = ?').get(username.toLowerCase()) as any;
       if (!existing) {
@@ -435,6 +451,9 @@ export function initDatabase() {
 
   // Ensure Administrator always exists (admin / Admin@123456)
   ensureUser('admin', 'Admin@123456', 'Lead Administrator', 'ADMIN', 'hossamhalawany@gmail.com');
+
+  // Ensure Operations Manager always exists (manager / Manager@123456)
+  ensureUser('manager', 'Manager@123456', 'Tariq Nabil (Operations Manager)', 'MANAGER', 'manager@hando.operations');
 
   // Ensure standard shift operators exist across redeployments
   ensureUser('ahmed', 'Ahmed@123456', 'Ahmed Hassan (Morning Op)', 'USER', 'ahmed@hando.operations');
@@ -471,12 +490,92 @@ export function initDatabase() {
   }
 }
 
-export function logAudit(userName: string, action: string, entityType: string, entityId: string | null = null, details: string | null = null, ipAddress: string | null = null) {
+export function logAudit(
+  userName: string,
+  action: string,
+  entityType: string,
+  entityId: string | null = null,
+  details: string | null = null,
+  ipAddress: string | null = null,
+  severity: 'INFO' | 'WARNING' | 'CRITICAL' = 'INFO',
+  category: 'SECURITY' | 'TASKS' | 'SHIFTS' | 'SYSTEM' = 'TASKS'
+) {
   try {
+    let finalSeverity = severity;
+    let finalCategory = category;
+
+    const actionLower = action.toLowerCase();
+    const entityLower = entityType.toLowerCase();
+
+    // Auto-detect severity if left as default INFO
+    if (finalSeverity === 'INFO') {
+      if (
+        actionLower.includes('failed') ||
+        actionLower.includes('denied') ||
+        actionLower.includes('deleted') ||
+        actionLower.includes('delete') ||
+        actionLower.includes('restore') ||
+        actionLower.includes('reset password') ||
+        actionLower.includes('purge')
+      ) {
+        finalSeverity = (actionLower.includes('failed') || actionLower.includes('denied') || actionLower.includes('delete') || actionLower.includes('restore'))
+          ? 'CRITICAL'
+          : 'WARNING';
+      } else if (
+        actionLower.includes('blocked') ||
+        actionLower.includes('cancel') ||
+        actionLower.includes('override') ||
+        actionLower.includes('reopen') ||
+        actionLower.includes('switch')
+      ) {
+        finalSeverity = 'WARNING';
+      }
+    }
+
+    // Auto-detect category if left as default TASKS
+    if (finalCategory === 'TASKS') {
+      if (
+        entityLower.includes('user') ||
+        entityLower.includes('auth') ||
+        actionLower.includes('login') ||
+        actionLower.includes('logout') ||
+        actionLower.includes('password')
+      ) {
+        finalCategory = 'SECURITY';
+      } else if (
+        entityLower.includes('shift') ||
+        entityLower.includes('handover') ||
+        actionLower.includes('shift') ||
+        actionLower.includes('handover')
+      ) {
+        finalCategory = 'SHIFTS';
+      } else if (
+        entityLower.includes('setting') ||
+        entityLower.includes('system') ||
+        entityLower.includes('category') ||
+        actionLower.includes('setting') ||
+        actionLower.includes('config') ||
+        actionLower.includes('database') ||
+        actionLower.includes('backup')
+      ) {
+        finalCategory = 'SYSTEM';
+      }
+    }
+
     db.prepare(`
-      INSERT INTO audit_logs (created_at, user_name, action, entity_type, entity_id, details, ip_address)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(new Date().toISOString(), userName, action, entityType, entityId, details, ipAddress || '127.0.0.1');
+      INSERT INTO audit_logs (created_at, user_name, action, entity_type, entity_id, details, ip_address, severity, category)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      new Date().toISOString(),
+      userName,
+      action,
+      entityType,
+      entityId,
+      details,
+      ipAddress || '127.0.0.1',
+      finalSeverity,
+      finalCategory
+    );
   } catch (err) {
     console.error('Failed to write audit log:', err);
   }
